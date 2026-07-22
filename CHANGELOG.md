@@ -4,13 +4,18 @@ All notable changes to Radial Layer Tools are documented here.
 
 ## Unreleased
 
+## 1.0.1 - 2026-07-22
+
+- Fixed GitHub release downloads by safely following asset redirects.
+- Added checksum mismatch diagnostics for update troubleshooting.
+- Added a green visual state when a new version is available.
+
+## 1.0.0 - 2026-07-22
+
 - Added asynchronous update checks through public GitHub Releases.
 - Added verified in-plugin download and installation with local backup and rollback.
 - Preserved `radial_layer_tools_config.json` during release packaging and updates.
 - Added a tag-only GitHub Actions release workflow.
-
-## 1.0.0 - 2026-07-22
-
 - Added configurable radial menus and menu presets.
 - Added fill layer, paint layer, mask, adjustment, and Painter filter commands.
 - Added bilingual command search and Painter-language following.

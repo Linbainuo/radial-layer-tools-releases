@@ -20,8 +20,8 @@ import substance_painter.ui
 
 
 CONFIG_FILE = "radial_layer_tools_config.json"
-PLUGIN_VERSION = "1.0.0"
-PLUGIN_BUILD = "2026.07.22-v1.0.0-release"
+PLUGIN_VERSION = "1.0.1"
+PLUGIN_BUILD = "2026.07.22-v1.0.1-release"
 GITHUB_REPOSITORY = "Linbainuo/radial-layer-tools-releases"
 GITHUB_REPOSITORY_URL = "https://github.com/" + GITHUB_REPOSITORY
 GITHUB_LATEST_RELEASE_API = (
@@ -477,6 +477,8 @@ TRANSLATIONS = {
         "release_missing_zip": "The release has no plugin ZIP package",
         "checksum_missing": "The release package has no SHA-256 digest",
         "checksum_mismatch": "The downloaded package failed verification",
+        "unsafe_update_redirect": "The update redirected to an untrusted address",
+        "too_many_update_redirects": "The update redirected too many times",
         "timeout": "The GitHub request timed out",
         "invalid_update": "The update package is invalid",
         "version_mismatch": "The package version does not match the release",
@@ -576,6 +578,8 @@ TRANSLATIONS = {
         "release_missing_zip": "发布版本中没有插件 ZIP 安装包",
         "checksum_missing": "发布包没有 SHA-256 校验值",
         "checksum_mismatch": "下载包校验失败",
+        "unsafe_update_redirect": "更新下载跳转到了不受信任的地址",
+        "too_many_update_redirects": "更新下载重定向次数过多",
         "timeout": "连接 GitHub 超时",
         "invalid_update": "更新包无效",
         "version_mismatch": "安装包版本与发布版本不一致",
@@ -1337,6 +1341,33 @@ def _network_redirect_policy(name):
     return getattr(enum_type, name, None) if enum_type is not None else None
 
 
+def _network_redirect_target(reply):
+    attribute = _network_request_attribute("RedirectionTargetAttribute")
+    try:
+        target = reply.attribute(attribute) if attribute is not None else None
+        target_url = QtCore.QUrl(target) if target is not None else QtCore.QUrl()
+        if not target_url.isValid() or target_url.isEmpty():
+            location = bytes(reply.rawHeader(b"Location")).decode(
+                "utf-8", errors="replace").strip()
+            target_url = QtCore.QUrl(location)
+        if not target_url.isValid() or target_url.isEmpty():
+            return QtCore.QUrl()
+        return reply.url().resolved(target_url)
+    except Exception:
+        return QtCore.QUrl()
+
+
+def _is_trusted_update_url(url):
+    candidate = url if isinstance(url, QtCore.QUrl) else QtCore.QUrl(str(url))
+    if not candidate.isValid() or candidate.scheme().casefold() != "https":
+        return False
+    host = candidate.host().casefold()
+    return (
+        host in {"github.com", "api.github.com"}
+        or host.endswith(".githubusercontent.com")
+    )
+
+
 def _network_no_error():
     value = getattr(QtNetwork.QNetworkReply, "NoError", None)
     if value is not None:
@@ -1459,6 +1490,7 @@ class UpdateManager(QtCore.QObject):
         self._release = {}
         self._reply = None
         self._purpose = ""
+        self._redirect_count = 0
         self._timed_out = False
         self._shutting_down = False
         self._network = QtNetwork.QNetworkAccessManager(self)
@@ -1573,17 +1605,27 @@ class UpdateManager(QtCore.QObject):
         self._set_state("downloading", progress=0)
         self._start_request(url, "download")
 
-    def _start_request(self, url, purpose):
-        request = QtNetwork.QNetworkRequest(QtCore.QUrl(str(url)))
+    def _start_request(self, url, purpose, redirect_count=0):
+        request_url = QtCore.QUrl(str(url))
+        if not _is_trusted_update_url(request_url):
+            self._set_state("error", "unsafe_update_redirect")
+            return
+        request = QtNetwork.QNetworkRequest(request_url)
         request.setRawHeader(
             b"User-Agent", ("RadialLayerTools/" + PLUGIN_VERSION).encode("ascii"))
-        request.setRawHeader(b"Accept", b"application/vnd.github+json")
+        accept = (
+            b"application/octet-stream"
+            if str(purpose) == "download"
+            else b"application/vnd.github+json"
+        )
+        request.setRawHeader(b"Accept", accept)
         request.setRawHeader(b"X-GitHub-Api-Version", b"2022-11-28")
         redirect_attribute = _network_request_attribute("RedirectPolicyAttribute")
         redirect_policy = _network_redirect_policy("NoLessSafeRedirectPolicy")
         if redirect_attribute is not None and redirect_policy is not None:
             request.setAttribute(redirect_attribute, redirect_policy)
         self._purpose = str(purpose)
+        self._redirect_count = max(0, int(redirect_count))
         self._timed_out = False
         self._reply = self._network.get(request)
         self._reply.finished.connect(self._request_finished)
@@ -1607,14 +1649,30 @@ class UpdateManager(QtCore.QObject):
             return
         self._timeout_timer.stop()
         purpose = self._purpose
+        redirect_count = self._redirect_count
+        redirect_url = _network_redirect_target(reply)
         self._reply = None
         self._purpose = ""
+        self._redirect_count = 0
         status = self._http_status(reply)
         data = bytes(reply.readAll())
         error = reply.error()
         error_text = reply.errorString()
         reply.deleteLater()
         if self._shutting_down:
+            return
+        if status in (301, 302, 303, 307, 308):
+            if not redirect_url.isValid() or redirect_url.isEmpty():
+                self._set_state("error", "unsafe_update_redirect")
+                return
+            if redirect_count >= 5:
+                self._set_state("error", "too_many_update_redirects")
+                return
+            if not _is_trusted_update_url(redirect_url):
+                self._set_state("error", "unsafe_update_redirect")
+                return
+            self._start_request(
+                redirect_url.toString(), purpose, redirect_count + 1)
             return
         if purpose == "check" and status == 404:
             self._cache_no_releases()
@@ -1704,6 +1762,9 @@ class UpdateManager(QtCore.QObject):
             self._release.get("asset_digest", "") or "").lower()
         actual_digest = "sha256:" + hashlib.sha256(data).hexdigest().lower()
         if expected_digest != actual_digest:
+            _error(
+                "Update checksum mismatch: expected %s, received %s (%d bytes)"
+                % (expected_digest, actual_digest, len(data)))
             self._set_state("error", "checksum_mismatch")
             return
         self._set_state("installing", progress=100)
@@ -3559,8 +3620,22 @@ class SettingsDialog(QtWidgets.QDialog):
             QLabel#updateStatusLabel {
                 color: #96999c; font-size: 11px;
             }
+            QLabel#versionLabel[updateState="available"],
+            QLabel#updateStatusLabel[updateState="available"] {
+                color: #63c879; font-weight: 600;
+            }
             QPushButton#updateButton {
                 min-height: 30px; padding: 0 10px;
+            }
+            QPushButton#updateButton[updateState="available"] {
+                background: #347d49; color: #f4fff6;
+                border: 1px solid #51a867;
+            }
+            QPushButton#updateButton[updateState="available"]:hover {
+                background: #3d9255; border-color: #67c87c;
+            }
+            QPushButton#updateButton[updateState="available"]:pressed {
+                background: #2b6b3e; border-color: #438e57;
             }
             QProgressBar#updateProgress {
                 background: #202020; border: none; border-radius: 1px;
@@ -4397,6 +4472,18 @@ class SettingsDialog(QtWidgets.QDialog):
         self.update_status_label.setVisible(bool(status_text))
         self.update_button.setText(button_text)
         self.update_button.setEnabled(button_enabled)
+        for widget in (
+                self.version_label,
+                self.update_status_label,
+                self.update_button):
+            if widget.property("updateState") == state:
+                continue
+            widget.setProperty("updateState", state)
+            style = widget.style()
+            if style is not None:
+                style.unpolish(widget)
+                style.polish(widget)
+            widget.update()
         self.update_progress.setVisible(show_progress)
         if show_progress:
             if state == "downloading" and progress >= 0:
