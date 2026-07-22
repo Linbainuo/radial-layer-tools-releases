@@ -15,7 +15,7 @@ All notable changes to Radial Layer Tools are documented here.
 - Replaced the Windows command-string relaunch with a bundled restart helper.
 - The helper waits for the old Painter process to exit before relaunching.
 
-## 1.0.0 - 2026-07-22
+## 0.9.8 - 2026-07-22
 
 - Added asynchronous update checks through public GitHub Releases.
 - Added verified in-plugin download and installation with local backup and rollback.
