@@ -1,0 +1,27 @@
+# Painter user state
+radial_layer_tools/radial_layer_tools_config.json
+radial_layer_tools/*.json.tmp
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local development material
+archive/
+design/
+references/
+releases/
+*.disabled
+
+# Editor and OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Build output
+build/
+dist/
+*.zip
+SHA256SUMS.txt
+
