@@ -20,8 +20,8 @@ import substance_painter.ui
 
 
 CONFIG_FILE = "radial_layer_tools_config.json"
-PLUGIN_VERSION = "1.0.0"
-PLUGIN_BUILD = "2026.07.22-v1.0.0-release"
+PLUGIN_VERSION = "0.9.8"
+PLUGIN_BUILD = "2026.07.22-v0.9.8-release"
 GITHUB_REPOSITORY = "Linbainuo/radial-layer-tools-releases"
 GITHUB_REPOSITORY_URL = "https://github.com/" + GITHUB_REPOSITORY
 GITHUB_LATEST_RELEASE_API = (

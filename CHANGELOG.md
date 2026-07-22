@@ -9,7 +9,7 @@ All notable changes to Radial Layer Tools are documented here.
 - Preserved `radial_layer_tools_config.json` during release packaging and updates.
 - Added a tag-only GitHub Actions release workflow.
 
-## 1.0.0 - 2026-07-22
+## 0.9.8 - 2026-07-22
 
 - Added configurable radial menus and menu presets.
 - Added fill layer, paint layer, mask, adjustment, and Painter filter commands.
