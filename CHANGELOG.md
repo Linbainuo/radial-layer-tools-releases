@@ -2,6 +2,13 @@
 
 All notable changes to Radial Layer Tools are documented here.
 
+## Unreleased
+
+- Added asynchronous update checks through public GitHub Releases.
+- Added verified in-plugin download and installation with local backup and rollback.
+- Preserved `radial_layer_tools_config.json` during release packaging and updates.
+- Added a tag-only GitHub Actions release workflow.
+
 ## 1.0.0 - 2026-07-22
 
 - Added configurable radial menus and menu presets.

@@ -1,0 +1,35 @@
+name: Publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build plugin package
+        run: python scripts/package_release.py --version "${GITHUB_REF_NAME}" --output dist
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          dist/RadialLayerTools-${GITHUB_REF_NAME}.zip
+          dist/RadialLayerTools-${GITHUB_REF_NAME}.zip.sha256
+          --verify-tag
+          --generate-notes
+          --title "Radial Layer Tools ${GITHUB_REF_NAME}"

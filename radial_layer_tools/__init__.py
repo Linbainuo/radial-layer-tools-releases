@@ -4,13 +4,15 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
 import traceback
 import ctypes
 import ctypes.wintypes
 import time
+import zipfile
 
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
 
 import substance_painter as sp
 import substance_painter.logging
@@ -20,6 +22,11 @@ import substance_painter.ui
 CONFIG_FILE = "radial_layer_tools_config.json"
 PLUGIN_VERSION = "1.0.0"
 PLUGIN_BUILD = "2026.07.22-v1.0.0-release"
+GITHUB_REPOSITORY = "Linbainuo/radial-layer-tools-releases"
+GITHUB_LATEST_RELEASE_API = (
+    "https://api.github.com/repos/%s/releases/latest" % GITHUB_REPOSITORY)
+UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
+UPDATE_REQUEST_TIMEOUT_MS = 15000
 
 
 QML = r'''
@@ -171,6 +178,7 @@ Item {
 DEFAULT_CONFIG = {
     "language": "painter",
     "shortcut": {"key": "`", "modifiers": []},
+    "auto_check_updates": True,
     "command_shortcuts": [],
     "radius": 128,
     "dead_zone_radius": 42,
@@ -441,7 +449,38 @@ TRANSLATIONS = {
         "node_levels": "Radial Levels",
         "black_mask_exists": "The selected layer already has a mask.",
         "no_active_stack": "No active texture set stack. Open a Painter project first.",
-        "blur_missing": "Could not find a Blur filter resource in the Painter shelves."
+        "blur_missing": "Could not find a Blur filter resource in the Painter shelves.",
+        "updates": "Updates",
+        "auto_check_updates": "Check automatically",
+        "check_updates": "Check for updates",
+        "checking_updates": "Checking...",
+        "up_to_date": "V{version} is up to date",
+        "no_releases": "No public release is available yet",
+        "update_available": "V{version} is available",
+        "download_update": "Download and install",
+        "downloading_update": "Downloading... {progress}%",
+        "installing_update": "Installing...",
+        "restart_to_finish": "Installed. Restart Painter to finish.",
+        "restart_painter": "Restart Painter",
+        "update_failed": "Update failed: {detail}",
+        "update_confirm_title": "Install update",
+        "update_confirm_message": (
+            "Download and install V{version}?\n\n"
+            "Your radial menu configuration will be preserved. Restart Painter "
+            "after installation to load the new version."
+        ),
+        "confirm_install": "Install",
+        "invalid_version": "The release version is invalid",
+        "release_missing_zip": "The release has no plugin ZIP package",
+        "checksum_missing": "The release package has no SHA-256 digest",
+        "checksum_mismatch": "The downloaded package failed verification",
+        "timeout": "The GitHub request timed out",
+        "invalid_update": "The update package is invalid",
+        "version_mismatch": "The package version does not match the release",
+        "update_too_large": "The update package is too large",
+        "unsafe_update_path": "The update package contains an unsafe path",
+        "unsafe_update_link": "The update package contains an unsafe link",
+        "network_error": "Could not connect to GitHub"
     },
     "zh_CN": {
         "dialog_title": "图层轮盘",
@@ -509,7 +548,37 @@ TRANSLATIONS = {
         "node_levels": "轮盘色阶",
         "black_mask_exists": "当前图层已经有遮罩，没有覆盖已有遮罩。",
         "no_active_stack": "没有活动的纹理集。请先打开 Painter 项目。",
-        "blur_missing": "没有在 Painter 资源库中找到 Blur/模糊滤镜。"
+        "blur_missing": "没有在 Painter 资源库中找到 Blur/模糊滤镜。",
+        "updates": "更新",
+        "auto_check_updates": "自动检查更新",
+        "check_updates": "检查更新",
+        "checking_updates": "正在检查...",
+        "up_to_date": "V{version} 已是最新版本",
+        "no_releases": "目前还没有公开发布版本",
+        "update_available": "发现新版本 V{version}",
+        "download_update": "下载并安装",
+        "downloading_update": "正在下载... {progress}%",
+        "installing_update": "正在安装...",
+        "restart_to_finish": "安装完成，请重启 Painter。",
+        "restart_painter": "重启 Painter",
+        "update_failed": "更新失败：{detail}",
+        "update_confirm_title": "安装更新",
+        "update_confirm_message": (
+            "确定下载并安装 V{version} 吗？\n\n"
+            "你的轮盘配置会被保留。安装完成后需要重启 Painter 才会载入新版本。"
+        ),
+        "confirm_install": "安装",
+        "invalid_version": "发布版本号无效",
+        "release_missing_zip": "发布版本中没有插件 ZIP 安装包",
+        "checksum_missing": "发布包没有 SHA-256 校验值",
+        "checksum_mismatch": "下载包校验失败",
+        "timeout": "连接 GitHub 超时",
+        "invalid_update": "更新包无效",
+        "version_mismatch": "安装包版本与发布版本不一致",
+        "update_too_large": "更新包体积异常",
+        "unsafe_update_path": "更新包包含不安全的文件路径",
+        "unsafe_update_link": "更新包包含不安全的链接",
+        "network_error": "无法连接 GitHub"
     }
 }
 
@@ -520,6 +589,7 @@ _SETTINGS_ACTION = None
 _TOOLBAR_BUTTON = None
 _SETTINGS_DIALOG = None
 _RUNTIME_CONFIG = None
+_UPDATE_MANAGER = None
 _PAINTER_LANGUAGE_CACHE = None
 _ICON_PIXMAP_CACHE = {}
 _RESOURCE_PIXMAP_CACHE = {}
@@ -1202,6 +1272,553 @@ def _active_menu_name(config):
         if str(menu.get("id", "")) == active_id:
             return _menu_preset_name(menu, config)
     return _tr("default_menu", config)
+
+
+def _update_cache_directory():
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    base = local_app_data or os.path.expanduser("~")
+    return os.path.join(base, "RadialLayerTools", "updates")
+
+
+def _update_state_path():
+    return os.path.join(_update_cache_directory(), "state.json")
+
+
+def _load_update_state():
+    try:
+        with open(_update_state_path(), "r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        return state if isinstance(state, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        _error("Failed to read update state:\n" + traceback.format_exc())
+        return {}
+
+
+def _save_update_state(state):
+    directory = _update_cache_directory()
+    os.makedirs(directory, exist_ok=True)
+    path = _update_state_path()
+    temporary_path = path + ".tmp"
+    with open(temporary_path, "w", encoding="utf-8") as handle:
+        json.dump(state, handle, indent=2, ensure_ascii=False)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary_path, path)
+
+
+def _version_tuple(value):
+    match = re.fullmatch(
+        r"\s*[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+].*)?\s*",
+        str(value or ""))
+    if match is None:
+        return ()
+    return tuple(int(part or 0) for part in match.groups())
+
+
+def _network_request_attribute(name):
+    value = getattr(QtNetwork.QNetworkRequest, name, None)
+    if value is not None:
+        return value
+    enum_type = getattr(QtNetwork.QNetworkRequest, "Attribute", None)
+    return getattr(enum_type, name, None) if enum_type is not None else None
+
+
+def _network_redirect_policy(name):
+    value = getattr(QtNetwork.QNetworkRequest, name, None)
+    if value is not None:
+        return value
+    enum_type = getattr(QtNetwork.QNetworkRequest, "RedirectPolicy", None)
+    return getattr(enum_type, name, None) if enum_type is not None else None
+
+
+def _network_no_error():
+    value = getattr(QtNetwork.QNetworkReply, "NoError", None)
+    if value is not None:
+        return value
+    enum_type = getattr(QtNetwork.QNetworkReply, "NetworkError", None)
+    return getattr(enum_type, "NoError", 0) if enum_type is not None else 0
+
+
+def _safe_extract_update(archive_path, destination):
+    destination_root = os.path.realpath(destination)
+    with zipfile.ZipFile(archive_path, "r") as archive:
+        members = archive.infolist()
+        if len(members) > 500:
+            raise ValueError("update_too_large")
+        total_size = sum(max(0, int(member.file_size)) for member in members)
+        if total_size > 100 * 1024 * 1024:
+            raise ValueError("update_too_large")
+        for member in members:
+            name = str(member.filename or "").replace("\\", "/")
+            if not name:
+                continue
+            if name.startswith("/") or re.match(r"^[A-Za-z]:", name):
+                raise ValueError("unsafe_update_path")
+            target = os.path.realpath(os.path.join(destination_root, name))
+            try:
+                inside_destination = os.path.commonpath(
+                    [destination_root, target]) == destination_root
+            except ValueError:
+                inside_destination = False
+            if not inside_destination:
+                raise ValueError("unsafe_update_path")
+            file_type = (int(member.external_attr) >> 16) & 0o170000
+            if file_type == 0o120000:
+                raise ValueError("unsafe_update_link")
+        archive.extractall(destination_root)
+
+
+def _find_update_package_root(extract_directory):
+    candidates = [
+        os.path.join(extract_directory, "radial_layer_tools"),
+        extract_directory
+    ]
+    for root, directories, filenames in os.walk(extract_directory):
+        del directories
+        if "__init__.py" in filenames:
+            candidates.append(root)
+    seen = set()
+    for candidate in candidates:
+        candidate = os.path.realpath(candidate)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if os.path.isfile(os.path.join(candidate, "__init__.py")):
+            return candidate
+    return ""
+
+
+def _package_version(package_root):
+    source_path = os.path.join(package_root, "__init__.py")
+    with open(source_path, "r", encoding="utf-8") as handle:
+        source = handle.read(8192)
+    match = re.search(
+        r"^PLUGIN_VERSION\s*=\s*['\"]([^'\"]+)['\"]",
+        source, re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def _iter_install_files(root):
+    for directory, subdirectories, filenames in os.walk(root):
+        subdirectories[:] = [
+            name for name in subdirectories if name != "__pycache__"]
+        for filename in filenames:
+            if filename == CONFIG_FILE or filename.endswith((".pyc", ".pyo")):
+                continue
+            source_path = os.path.join(directory, filename)
+            relative_path = os.path.relpath(source_path, root)
+            yield source_path, relative_path
+
+
+def _copy_file_atomically(source_path, destination_path):
+    os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+    temporary_path = destination_path + ".update_tmp"
+    try:
+        shutil.copy2(source_path, temporary_path)
+        os.replace(temporary_path, destination_path)
+    finally:
+        if os.path.isfile(temporary_path):
+            try:
+                os.remove(temporary_path)
+            except OSError:
+                pass
+
+
+def _backup_current_plugin(destination):
+    for source_path, relative_path in _iter_install_files(_plugin_root()):
+        target_path = os.path.join(destination, relative_path)
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        shutil.copy2(source_path, target_path)
+
+
+def _restore_plugin_backup(backup_directory):
+    if not backup_directory or not os.path.isdir(backup_directory):
+        return
+    for source_path, relative_path in _iter_install_files(backup_directory):
+        _copy_file_atomically(
+            source_path, os.path.join(_plugin_root(), relative_path))
+
+
+class UpdateManager(QtCore.QObject):
+    stateChanged = QtCore.Signal()
+    progressChanged = QtCore.Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.state = "idle"
+        self.detail = ""
+        self.progress = -1
+        self.latest_version = ""
+        self.release_notes = ""
+        self._release = {}
+        self._reply = None
+        self._purpose = ""
+        self._timed_out = False
+        self._shutting_down = False
+        self._network = QtNetwork.QNetworkAccessManager(self)
+        self._timeout_timer = QtCore.QTimer(self)
+        self._timeout_timer.setSingleShot(True)
+        self._timeout_timer.timeout.connect(self._timeout_active_request)
+        self._automatic_timer = QtCore.QTimer(self)
+        self._automatic_timer.setSingleShot(True)
+        self._automatic_timer.timeout.connect(self.check_automatic)
+        self._cached_state = _load_update_state()
+        self._apply_cached_state()
+
+    def schedule_automatic_check(self, delay_ms=2500):
+        if self._shutting_down or self._automatic_timer.isActive():
+            return
+        self._automatic_timer.start(max(0, int(delay_ms)))
+
+    def _set_state(self, state, detail="", progress=None):
+        self.state = str(state)
+        self.detail = str(detail or "")
+        if progress is not None:
+            self.progress = int(progress)
+            self.progressChanged.emit(self.progress)
+        self.stateChanged.emit()
+
+    def _apply_cached_state(self):
+        installed_version = str(
+            self._cached_state.get("installed_version", "") or "")
+        pending_restart = bool(self._cached_state.get("pending_restart", False))
+        if pending_restart and _version_tuple(installed_version) > _version_tuple(
+                PLUGIN_VERSION):
+            self.latest_version = installed_version
+            self._set_state("restart")
+            return
+        if pending_restart and installed_version == PLUGIN_VERSION:
+            self._cached_state["pending_restart"] = False
+            self._cached_state["result"] = "latest"
+            try:
+                _save_update_state(self._cached_state)
+            except Exception:
+                _error("Failed to finalize update state:\n" + traceback.format_exc())
+
+        self.latest_version = str(
+            self._cached_state.get("latest_version", "") or "")
+        self.release_notes = str(
+            self._cached_state.get("release_notes", "") or "")
+        self._release = {
+            "version": self.latest_version,
+            "asset_name": str(
+                self._cached_state.get("asset_name", "") or ""),
+            "asset_url": str(
+                self._cached_state.get("asset_url", "") or ""),
+            "asset_digest": str(
+                self._cached_state.get("asset_digest", "") or "")
+        }
+        result = str(self._cached_state.get("result", "") or "")
+        if result == "no_releases":
+            self._set_state("no_releases")
+        elif self.latest_version:
+            self._apply_release_state()
+
+    def _apply_release_state(self):
+        remote = _version_tuple(self.latest_version)
+        current = _version_tuple(PLUGIN_VERSION)
+        if not remote:
+            self._set_state("error", "invalid_version")
+        elif remote > current:
+            if not self._release.get("asset_url"):
+                self._set_state("error", "release_missing_zip")
+            elif not str(self._release.get("asset_digest", "")).startswith(
+                    "sha256:"):
+                self._set_state("error", "checksum_missing")
+            else:
+                self._set_state("available")
+        else:
+            self._set_state("latest")
+
+    def check_automatic(self):
+        try:
+            config = _load_config()
+            if not bool(config.get("auto_check_updates", True)):
+                return
+            self.check_for_updates(force=False)
+        except Exception:
+            _error("Automatic update check failed:\n" + traceback.format_exc())
+
+    def check_for_updates(self, force=True):
+        if self._reply is not None or self.state in ("downloading", "installing"):
+            return
+        if self.state == "restart":
+            self.stateChanged.emit()
+            return
+        last_checked = float(self._cached_state.get("last_checked", 0.0) or 0.0)
+        if (
+                not force
+                and last_checked > 0
+                and time.time() - last_checked < UPDATE_CHECK_INTERVAL_SECONDS):
+            self._apply_cached_state()
+            return
+        self.latest_version = ""
+        self._release = {}
+        self._set_state("checking", progress=-1)
+        self._start_request(GITHUB_LATEST_RELEASE_API, "check")
+
+    def download_and_install(self):
+        if self.state != "available" or self._reply is not None:
+            return
+        url = str(self._release.get("asset_url", "") or "")
+        if not url:
+            self._set_state("error", "release_missing_zip")
+            return
+        self._set_state("downloading", progress=0)
+        self._start_request(url, "download")
+
+    def _start_request(self, url, purpose):
+        request = QtNetwork.QNetworkRequest(QtCore.QUrl(str(url)))
+        request.setRawHeader(
+            b"User-Agent", ("RadialLayerTools/" + PLUGIN_VERSION).encode("ascii"))
+        request.setRawHeader(b"Accept", b"application/vnd.github+json")
+        request.setRawHeader(b"X-GitHub-Api-Version", b"2022-11-28")
+        redirect_attribute = _network_request_attribute("RedirectPolicyAttribute")
+        redirect_policy = _network_redirect_policy("NoLessSafeRedirectPolicy")
+        if redirect_attribute is not None and redirect_policy is not None:
+            request.setAttribute(redirect_attribute, redirect_policy)
+        self._purpose = str(purpose)
+        self._timed_out = False
+        self._reply = self._network.get(request)
+        self._reply.finished.connect(self._request_finished)
+        if self._purpose == "download":
+            self._reply.downloadProgress.connect(self._download_progress)
+        self._timeout_timer.start(UPDATE_REQUEST_TIMEOUT_MS)
+
+    def _http_status(self, reply):
+        attribute = _network_request_attribute("HttpStatusCodeAttribute")
+        if attribute is None:
+            return 0
+        try:
+            value = reply.attribute(attribute)
+            return int(value) if value is not None else 0
+        except Exception:
+            return 0
+
+    def _request_finished(self):
+        reply = self._reply
+        if reply is None:
+            return
+        self._timeout_timer.stop()
+        purpose = self._purpose
+        self._reply = None
+        self._purpose = ""
+        status = self._http_status(reply)
+        data = bytes(reply.readAll())
+        error = reply.error()
+        error_text = reply.errorString()
+        reply.deleteLater()
+        if self._shutting_down:
+            return
+        if purpose == "check" and status == 404:
+            self._cache_no_releases()
+            return
+        if self._timed_out:
+            self._set_state("error", "timeout")
+            return
+        if error != _network_no_error() or status >= 400:
+            self._set_state("error", error_text or "network_error")
+            return
+        try:
+            if purpose == "check":
+                self._handle_release_response(data)
+            elif purpose == "download":
+                self._handle_download_response(data)
+        except Exception:
+            _error("Update request failed:\n" + traceback.format_exc())
+            self._set_state("error", "invalid_update")
+
+    def _handle_release_response(self, data):
+        payload = json.loads(data.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("invalid_release")
+        version = str(payload.get("tag_name", "") or "").lstrip("vV")
+        if not _version_tuple(version):
+            raise ValueError("invalid_version")
+        assets = payload.get("assets", [])
+        assets = assets if isinstance(assets, list) else []
+        zip_assets = [
+            asset for asset in assets
+            if isinstance(asset, dict)
+            and str(asset.get("name", "")).lower().endswith(".zip")]
+        preferred = [
+            asset for asset in zip_assets
+            if "radiallayertools" in re.sub(
+                r"[^a-z0-9]", "", str(asset.get("name", "")).lower())]
+        asset = (preferred or zip_assets or [{}])[0]
+        self.latest_version = version
+        self.release_notes = str(payload.get("body", "") or "")[:8000]
+        self._release = {
+            "version": version,
+            "asset_name": str(asset.get("name", "") or ""),
+            "asset_url": str(asset.get("browser_download_url", "") or ""),
+            "asset_digest": str(asset.get("digest", "") or "").lower()
+        }
+        self._cached_state.update({
+            "last_checked": time.time(),
+            "result": "release",
+            "latest_version": self.latest_version,
+            "release_notes": self.release_notes,
+            "asset_name": self._release["asset_name"],
+            "asset_url": self._release["asset_url"],
+            "asset_digest": self._release["asset_digest"]
+        })
+        _save_update_state(self._cached_state)
+        self._apply_release_state()
+
+    def _cache_no_releases(self):
+        self.latest_version = ""
+        self.release_notes = ""
+        self._release = {}
+        self._cached_state.update({
+            "last_checked": time.time(),
+            "result": "no_releases",
+            "latest_version": "",
+            "release_notes": "",
+            "asset_name": "",
+            "asset_url": "",
+            "asset_digest": ""
+        })
+        try:
+            _save_update_state(self._cached_state)
+        except Exception:
+            _error("Failed to cache update result:\n" + traceback.format_exc())
+        self._set_state("no_releases", progress=-1)
+
+    def _download_progress(self, received, total):
+        if total <= 0:
+            return
+        progress = max(0, min(100, int(received * 100 / total)))
+        if progress != self.progress:
+            self.progress = progress
+            self.progressChanged.emit(progress)
+
+    def _handle_download_response(self, data):
+        expected_digest = str(
+            self._release.get("asset_digest", "") or "").lower()
+        actual_digest = "sha256:" + hashlib.sha256(data).hexdigest().lower()
+        if expected_digest != actual_digest:
+            self._set_state("error", "checksum_mismatch")
+            return
+        self._set_state("installing", progress=100)
+        QtCore.QTimer.singleShot(
+            0, lambda payload=data: self._install_download(payload))
+
+    def _install_download(self, data):
+        backup_directory = ""
+        backup_ready = False
+        extract_directory = ""
+        installed_paths = []
+        existing_paths = set()
+        try:
+            cache_directory = _update_cache_directory()
+            downloads_directory = os.path.join(cache_directory, "downloads")
+            os.makedirs(downloads_directory, exist_ok=True)
+            asset_name = os.path.basename(str(
+                self._release.get("asset_name", "") or "update.zip"))
+            archive_path = os.path.join(downloads_directory, asset_name)
+            temporary_archive = archive_path + ".tmp"
+            with open(temporary_archive, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_archive, archive_path)
+
+            extract_directory = os.path.join(
+                cache_directory, "extract-%d" % int(time.time() * 1000))
+            os.makedirs(extract_directory, exist_ok=False)
+            _safe_extract_update(archive_path, extract_directory)
+            package_root = _find_update_package_root(extract_directory)
+            if not package_root:
+                raise ValueError("invalid_update")
+            package_version = _package_version(package_root)
+            if _version_tuple(package_version) != _version_tuple(
+                    self.latest_version):
+                raise ValueError("version_mismatch")
+
+            backup_directory = os.path.join(
+                cache_directory,
+                "backups",
+                "V%s-%s" % (
+                    PLUGIN_VERSION, time.strftime("%Y%m%d-%H%M%S")))
+            os.makedirs(backup_directory, exist_ok=False)
+            _backup_current_plugin(backup_directory)
+            backup_ready = True
+            existing_paths = {
+                os.path.normcase(os.path.normpath(relative_path))
+                for unused_source, relative_path in _iter_install_files(
+                    _plugin_root())
+            }
+            for source_path, relative_path in _iter_install_files(package_root):
+                destination_path = os.path.join(_plugin_root(), relative_path)
+                _copy_file_atomically(source_path, destination_path)
+                installed_paths.append((destination_path, relative_path))
+
+            self._cached_state.update({
+                "pending_restart": True,
+                "installed_version": self.latest_version,
+                "backup_directory": backup_directory,
+                "installed_at": time.time()
+            })
+            _save_update_state(self._cached_state)
+            self._set_state("restart", progress=100)
+            _log("Installed update V%s; restart Painter to load it." %
+                 self.latest_version)
+        except Exception as exception:
+            if backup_ready:
+                try:
+                    for destination_path, relative_path in installed_paths:
+                        normalized = os.path.normcase(os.path.normpath(
+                            relative_path))
+                        if normalized not in existing_paths:
+                            try:
+                                os.remove(destination_path)
+                            except OSError:
+                                pass
+                    _restore_plugin_backup(backup_directory)
+                except Exception:
+                    _error("Update rollback failed:\n" + traceback.format_exc())
+            _error("Update installation failed:\n" + traceback.format_exc())
+            detail = str(exception or "invalid_update")
+            self._set_state("error", detail)
+        finally:
+            if extract_directory and os.path.isdir(extract_directory):
+                try:
+                    shutil.rmtree(extract_directory)
+                except Exception:
+                    _error("Failed to clean update staging directory:\n" +
+                           traceback.format_exc())
+
+    def _timeout_active_request(self):
+        if self._reply is None:
+            return
+        self._timed_out = True
+        self._reply.abort()
+
+    def shutdown(self):
+        self._shutting_down = True
+        self._automatic_timer.stop()
+        self._timeout_timer.stop()
+        reply = self._reply
+        self._reply = None
+        if reply is not None:
+            try:
+                reply.finished.disconnect(self._request_finished)
+            except (RuntimeError, TypeError):
+                pass
+            if self._purpose == "download":
+                try:
+                    reply.downloadProgress.disconnect(self._download_progress)
+                except (RuntimeError, TypeError):
+                    pass
+            try:
+                reply.abort()
+                reply.deleteLater()
+            except RuntimeError:
+                pass
+        self._purpose = ""
 
 
 def _language_code(value):
@@ -2459,6 +3076,7 @@ class SettingsDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self._loading = False
         self._highlight_color = QtGui.QColor("#2d8fe8")
+        self._update_manager = None
         self.shortcut_assignment_rows = {}
         self.working_config = copy.deepcopy(DEFAULT_CONFIG)
         self.setWindowTitle(_tr("settings_title"))
@@ -2472,6 +3090,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self._thumbnail_timer.setSingleShot(True)
         self._thumbnail_timer.timeout.connect(self._load_next_thumbnail)
         self.load_config(_load_config())
+        self._bind_update_manager()
 
     def _build_ui(self):
         root_layout = QtWidgets.QVBoxLayout(self)
@@ -2742,13 +3361,60 @@ class SettingsDialog(QtWidgets.QDialog):
         add_form_row("highlight_color", self.color_button)
         properties_layout.addLayout(self.form)
         properties_layout.addStretch(1)
+
+        self.update_section = QtWidgets.QFrame(self.properties_page)
+        self.update_section.setObjectName("updateSection")
+        update_layout = QtWidgets.QVBoxLayout(self.update_section)
+        update_layout.setContentsMargins(0, 12, 0, 0)
+        update_layout.setSpacing(7)
+
+        update_header = QtWidgets.QHBoxLayout()
+        update_header.setContentsMargins(0, 0, 0, 0)
+        update_header.setSpacing(8)
+        self.update_title_label = QtWidgets.QLabel(
+            _tr("updates"), self.update_section)
+        self.update_title_label.setObjectName("updateTitleLabel")
+        update_header.addWidget(self.update_title_label)
+        update_header.addStretch(1)
         self.version_label = QtWidgets.QLabel(
-            "V" + PLUGIN_VERSION, self.properties_page)
+            "V" + PLUGIN_VERSION, self.update_section)
         self.version_label.setObjectName("versionLabel")
         self.version_label.setAlignment(
-            QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-        properties_layout.addWidget(
-            self.version_label, 0, QtCore.Qt.AlignLeft)
+            QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        update_header.addWidget(self.version_label)
+        update_layout.addLayout(update_header)
+
+        self.update_status_label = QtWidgets.QLabel(self.update_section)
+        self.update_status_label.setObjectName("updateStatusLabel")
+        self.update_status_label.setWordWrap(True)
+        self.update_status_label.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse)
+        update_layout.addWidget(self.update_status_label)
+
+        self.update_progress = QtWidgets.QProgressBar(self.update_section)
+        self.update_progress.setObjectName("updateProgress")
+        self.update_progress.setRange(0, 100)
+        self.update_progress.setValue(0)
+        self.update_progress.setTextVisible(False)
+        self.update_progress.setFixedHeight(3)
+        self.update_progress.hide()
+        update_layout.addWidget(self.update_progress)
+
+        update_actions = QtWidgets.QHBoxLayout()
+        update_actions.setContentsMargins(0, 0, 0, 0)
+        update_actions.setSpacing(8)
+        self.auto_update_checkbox = QtWidgets.QCheckBox(
+            _tr("auto_check_updates"), self.update_section)
+        self.auto_update_checkbox.toggled.connect(self._controls_changed)
+        update_actions.addWidget(self.auto_update_checkbox, 1)
+        self.update_button = QtWidgets.QPushButton(
+            _tr("check_updates"), self.update_section)
+        self.update_button.setObjectName("updateButton")
+        self.update_button.setMinimumWidth(108)
+        self.update_button.clicked.connect(self._update_button_clicked)
+        update_actions.addWidget(self.update_button)
+        update_layout.addLayout(update_actions)
+        properties_layout.addWidget(self.update_section)
         self.sidebar_stack.addWidget(self.properties_page)
         self.sidebar_stack.setCurrentWidget(self.command_page)
         self._set_command_mode(0)
@@ -2854,6 +3520,24 @@ class SettingsDialog(QtWidgets.QDialog):
             QLabel#versionLabel {
                 color: #777a7d; font-size: 11px; font-weight: 400;
                 padding: 0 0 2px 0;
+            }
+            QFrame#updateSection {
+                background: transparent; border-top: 1px solid #424242;
+            }
+            QLabel#updateTitleLabel {
+                color: #d9d9d9; font-size: 12px; font-weight: 600;
+            }
+            QLabel#updateStatusLabel {
+                color: #96999c; font-size: 11px;
+            }
+            QPushButton#updateButton {
+                min-height: 30px; padding: 0 10px;
+            }
+            QProgressBar#updateProgress {
+                background: #202020; border: none; border-radius: 1px;
+            }
+            QProgressBar#updateProgress::chunk {
+                background: #2d8fe8; border-radius: 1px;
             }
             QFrame#settingsSidebar { background: #2b2b2b; }
             QFrame#settingsEditor { background: #303030; }
@@ -3019,6 +3703,8 @@ class SettingsDialog(QtWidgets.QDialog):
         language_index = self.language_combo.findData(language)
         self.language_combo.setCurrentIndex(max(0, language_index))
         self.shortcut_edit.setKeySequence(_shortcut_sequence(self.working_config))
+        self.auto_update_checkbox.setChecked(bool(
+            self.working_config.get("auto_check_updates", True)))
         self.wheel_radius_spin.setValue(int(self.working_config.get("wheel_radius", 154)))
         self.inner_radius_spin.setMaximum(max(45, self.wheel_radius_spin.value() - 28))
         self.inner_radius_spin.setValue(int(self.working_config.get("inner_radius", 76)))
@@ -3540,6 +4226,8 @@ class SettingsDialog(QtWidgets.QDialog):
             return
         self.working_config["language"] = str(self.language_combo.currentData() or "painter")
         self.working_config["shortcut"] = self._shortcut_config()
+        self.working_config["auto_check_updates"] = bool(
+            self.auto_update_checkbox.isChecked())
         self.working_config["wheel_radius"] = self.wheel_radius_spin.value()
         self.working_config["inner_radius"] = min(
             self.inner_radius_spin.value(), self.wheel_radius_spin.value() - 28)
@@ -3585,6 +4273,8 @@ class SettingsDialog(QtWidgets.QDialog):
         self.close_button.setText(_tr("close", config))
         self.color_button.setToolTip(_tr("highlight_color", config))
         self.hint_label.setText(_tr("editor_hint", config))
+        self.update_title_label.setText(_tr("updates", config))
+        self.auto_update_checkbox.setText(_tr("auto_check_updates", config))
 
         was_blocked = self.language_combo.blockSignals(True)
         self.language_combo.setItemText(0, _tr("language_painter", config))
@@ -3599,6 +4289,124 @@ class SettingsDialog(QtWidgets.QDialog):
         self._rebuild_menu_cards()
         self._rebuild_shortcut_assignments()
         self._update_status()
+        self._refresh_update_ui()
+
+    def _bind_update_manager(self):
+        manager = _ensure_update_manager()
+        if manager is self._update_manager:
+            self._refresh_update_ui()
+            return
+        if self._update_manager is not None:
+            try:
+                self._update_manager.stateChanged.disconnect(
+                    self._refresh_update_ui)
+                self._update_manager.progressChanged.disconnect(
+                    self._update_progress_changed)
+            except (RuntimeError, TypeError):
+                pass
+        self._update_manager = manager
+        if manager is not None:
+            manager.stateChanged.connect(self._refresh_update_ui)
+            manager.progressChanged.connect(self._update_progress_changed)
+        self._refresh_update_ui()
+
+    def _update_detail_text(self, detail):
+        detail = str(detail or "").strip()
+        if not detail:
+            return _tr("network_error", self.working_config)
+        translated = _tr(detail, self.working_config)
+        return translated if translated != detail else detail
+
+    def _refresh_update_ui(self):
+        if not hasattr(self, "update_button"):
+            return
+        manager = self._update_manager
+        state = manager.state if manager is not None else "idle"
+        version = (
+            manager.latest_version if manager is not None
+            else PLUGIN_VERSION)
+        progress = manager.progress if manager is not None else -1
+        config = self.working_config
+
+        status_text = ""
+        button_text = _tr("check_updates", config)
+        button_enabled = state in (
+            "idle", "latest", "no_releases", "available", "error")
+        show_progress = state in ("checking", "downloading", "installing")
+
+        if state == "checking":
+            status_text = _tr("checking_updates", config)
+            button_text = status_text
+        elif state == "no_releases":
+            status_text = _tr("no_releases", config)
+        elif state == "latest":
+            status_text = _tr("up_to_date", config).format(
+                version=PLUGIN_VERSION)
+        elif state == "available":
+            status_text = _tr("update_available", config).format(
+                version=version)
+            button_text = _tr("download_update", config)
+        elif state == "downloading":
+            status_text = _tr("downloading_update", config).format(
+                progress=max(0, progress))
+            button_text = _tr("downloading_update", config).format(
+                progress=max(0, progress))
+        elif state == "installing":
+            status_text = _tr("installing_update", config)
+            button_text = status_text
+        elif state == "restart":
+            status_text = _tr("restart_to_finish", config)
+            button_text = _tr("restart_painter", config)
+        elif state == "error":
+            status_text = _tr("update_failed", config).format(
+                detail=self._update_detail_text(manager.detail))
+
+        self.update_status_label.setText(status_text)
+        self.update_status_label.setVisible(bool(status_text))
+        self.update_button.setText(button_text)
+        self.update_button.setEnabled(button_enabled)
+        self.update_progress.setVisible(show_progress)
+        if show_progress:
+            if state == "downloading" and progress >= 0:
+                self.update_progress.setRange(0, 100)
+                self.update_progress.setValue(max(0, min(100, progress)))
+            else:
+                self.update_progress.setRange(0, 0)
+
+    def _update_progress_changed(self, value):
+        del value
+        self._refresh_update_ui()
+
+    def _update_button_clicked(self):
+        manager = self._update_manager
+        if manager is None:
+            self._bind_update_manager()
+            manager = self._update_manager
+        if manager is None:
+            return
+        if manager.state != "available":
+            manager.check_for_updates(force=True)
+            return
+
+        dialog = QtWidgets.QMessageBox(self)
+        dialog.setWindowTitle(
+            _tr("update_confirm_title", self.working_config))
+        dialog.setIcon(QtWidgets.QMessageBox.Information)
+        dialog.setTextFormat(QtCore.Qt.PlainText)
+        dialog.setText(_tr(
+            "update_confirm_message", self.working_config).format(
+                version=manager.latest_version))
+        install_button = dialog.addButton(
+            _tr("confirm_install", self.working_config),
+            QtWidgets.QMessageBox.AcceptRole)
+        cancel_button = dialog.addButton(
+            _tr("close", self.working_config),
+            QtWidgets.QMessageBox.RejectRole)
+        dialog.setDefaultButton(install_button)
+        dialog.setEscapeButton(cancel_button)
+        dialog.exec()
+        if dialog.clickedButton() is install_button:
+            manager.download_and_install()
 
     def _wheel_radius_changed(self, value):
         self.inner_radius_spin.setMaximum(max(45, int(value) - 28))
@@ -3680,10 +4488,20 @@ class SettingsDialog(QtWidgets.QDialog):
                 min(self.height(), maximum_height))
         self._show_commands_page()
         super().showEvent(event)
+        self._bind_update_manager()
         if self._thumbnail_queue and not self._thumbnail_timer.isActive():
             self._thumbnail_timer.start(1)
 
     def shutdown(self):
+        if self._update_manager is not None:
+            try:
+                self._update_manager.stateChanged.disconnect(
+                    self._refresh_update_ui)
+                self._update_manager.progressChanged.disconnect(
+                    self._update_progress_changed)
+            except (RuntimeError, TypeError):
+                pass
+            self._update_manager = None
         if self.shortcut_edit._capturing:
             self.shortcut_edit._cancel_capture()
         self._thumbnail_timer.stop()
@@ -4408,6 +5226,14 @@ def _settings_visible():
     return _SETTINGS_DIALOG is not None and _SETTINGS_DIALOG.isVisible()
 
 
+def _ensure_update_manager():
+    global _UPDATE_MANAGER
+    if _UPDATE_MANAGER is None:
+        parent = substance_painter.ui.get_main_window()
+        _UPDATE_MANAGER = UpdateManager(parent)
+    return _UPDATE_MANAGER
+
+
 def _show_settings():
     global _SETTINGS_DIALOG
     if _KEY_FILTER is not None:
@@ -4424,7 +5250,7 @@ def _show_settings():
 
 def start_plugin():
     global _KEY_FILTER, _NATIVE_WHEEL_FILTER, _POPUP, _RUNTIME_CONFIG
-    global _SETTINGS_ACTION, _TOOLBAR_BUTTON
+    global _SETTINGS_ACTION, _TOOLBAR_BUTTON, _UPDATE_MANAGER
     main_window = substance_painter.ui.get_main_window()
     config = _load_config()
     _RUNTIME_CONFIG = copy.deepcopy(config)
@@ -4462,6 +5288,11 @@ def start_plugin():
         _TOOLBAR_BUTTON.clicked.connect(_show_settings)
         substance_painter.ui.add_plugins_toolbar_widget(_TOOLBAR_BUTTON)
 
+    update_manager_created = _UPDATE_MANAGER is None
+    update_manager = _ensure_update_manager()
+    if update_manager_created:
+        update_manager.schedule_automatic_check()
+
     _log("Started hold-key popup build " + PLUGIN_BUILD)
 
 
@@ -4471,6 +5302,7 @@ def close_plugin():
     global _RESOURCE_IMAGE_PROVIDER, _RESOURCE_PRELOAD_RETRIES
     global _RESOURCE_PROVIDER_RETRY_AFTER, _RESOURCE_METADATA_INDEX
     global _RESOURCE_SIDECAR_INDEX, _FILTER_COMMAND_CACHE, _FILTER_SCAN_COMPLETE
+    global _UPDATE_MANAGER
     app = QtWidgets.QApplication.instance()
     if app is not None and _KEY_FILTER is not None:
         _KEY_FILTER.release_hold(run_hovered=False)
@@ -4500,6 +5332,11 @@ def close_plugin():
         _SETTINGS_DIALOG.setParent(None)
         _SETTINGS_DIALOG.deleteLater()
         _SETTINGS_DIALOG = None
+    if _UPDATE_MANAGER is not None:
+        _UPDATE_MANAGER.shutdown()
+        _UPDATE_MANAGER.setParent(None)
+        _UPDATE_MANAGER.deleteLater()
+        _UPDATE_MANAGER = None
     if _SETTINGS_ACTION is not None:
         try:
             _SETTINGS_ACTION.triggered.disconnect(_show_settings)
