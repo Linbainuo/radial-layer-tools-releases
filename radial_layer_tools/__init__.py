@@ -20,8 +20,8 @@ import substance_painter.ui
 
 
 CONFIG_FILE = "radial_layer_tools_config.json"
-PLUGIN_VERSION = "1.0.1"
-PLUGIN_BUILD = "2026.07.22-v1.0.1-release"
+PLUGIN_VERSION = "1.0.2"
+PLUGIN_BUILD = "2026.07.22-v1.0.2-release"
 GITHUB_REPOSITORY = "Linbainuo/radial-layer-tools-releases"
 GITHUB_REPOSITORY_URL = "https://github.com/" + GITHUB_REPOSITORY
 GITHUB_LATEST_RELEASE_API = (
@@ -465,6 +465,14 @@ TRANSLATIONS = {
         "installing_update": "Installing...",
         "restart_to_finish": "Installed. Restart Painter to finish.",
         "restart_painter": "Restart Painter",
+        "restart_prompt_title": "Restart Painter",
+        "restart_prompt_message": (
+            "V{version} was installed successfully. Restart Painter now to load "
+            "the update?\n\nIf the current project has unsaved changes, Painter "
+            "will ask whether to save them."
+        ),
+        "restart_later": "Restart later",
+        "restart_now": "Restart now",
         "update_failed": "Update failed: {detail}",
         "update_confirm_title": "Install update",
         "update_confirm_message": (
@@ -567,6 +575,13 @@ TRANSLATIONS = {
         "installing_update": "正在安装...",
         "restart_to_finish": "安装完成，请重启 Painter。",
         "restart_painter": "重启 Painter",
+        "restart_prompt_title": "重启 Painter",
+        "restart_prompt_message": (
+            "V{version} 已安装完成。是否立即重启 Painter 以载入更新？\n\n"
+            "如果当前项目有未保存的修改，Painter 会询问是否保存。"
+        ),
+        "restart_later": "稍后重启",
+        "restart_now": "立即重启",
         "update_failed": "更新失败：{detail}",
         "update_confirm_title": "安装更新",
         "update_confirm_message": (
@@ -612,6 +627,7 @@ _LAST_SLOT_INDEX = None
 _LAST_LAYER_SLOT_INDEX = None
 _LAST_WHEEL_TIME = 0.0
 _LAST_WHEEL_SIGN = 0
+_RESTART_LAUNCH_CALLBACK = None
 
 VK_SHIFT = 0x10
 VK_CONTROL = 0x11
@@ -635,6 +651,88 @@ def _log(message):
 
 def _error(message):
     substance_painter.logging.error("[Radial Layer Tools] " + message)
+
+
+def _current_application_executable():
+    if os.name == "nt":
+        try:
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = ctypes.windll.kernel32.GetModuleFileNameW(
+                None, buffer, len(buffer))
+            if length:
+                return os.path.realpath(buffer.value)
+        except Exception:
+            _error("Could not resolve Painter executable:\n" +
+                   traceback.format_exc())
+    return os.path.realpath(sys.executable)
+
+
+def _launch_painter_detached():
+    executable = _current_application_executable()
+    if not executable or not os.path.isfile(executable):
+        _error("Could not restart Painter: executable was not found.")
+        return False
+    working_directory = os.path.dirname(executable)
+    if os.name == "nt":
+        command_shell = os.environ.get("COMSPEC", "cmd.exe")
+        escaped_directory = working_directory.replace('"', '""')
+        escaped_executable = executable.replace('"', '""')
+        command = (
+            'ping 127.0.0.1 -n 3 >nul & start "" /D "{directory}" '
+            '"{executable}"'
+        ).format(
+            directory=escaped_directory,
+            executable=escaped_executable)
+        result = QtCore.QProcess.startDetached(
+            command_shell, ["/D", "/S", "/C", command], working_directory)
+    else:
+        result = QtCore.QProcess.startDetached(
+            "/bin/sh",
+            ["-c", 'sleep 2; exec "$1"', "radial-layer-tools", executable],
+            working_directory)
+    success = bool(result[0]) if isinstance(result, tuple) else bool(result)
+    if not success:
+        _error("Could not start Painter after shutdown.")
+    return success
+
+
+def _clear_restart_launch_callback(application=None):
+    global _RESTART_LAUNCH_CALLBACK
+    callback = _RESTART_LAUNCH_CALLBACK
+    _RESTART_LAUNCH_CALLBACK = None
+    application = application or QtWidgets.QApplication.instance()
+    if application is not None and callback is not None:
+        try:
+            application.aboutToQuit.disconnect(callback)
+        except (RuntimeError, TypeError):
+            pass
+
+
+def _request_painter_restart():
+    global _RESTART_LAUNCH_CALLBACK
+    application = QtWidgets.QApplication.instance()
+    main_window = substance_painter.ui.get_main_window()
+    if application is None or main_window is None:
+        _error("Could not restart Painter: main window was not found.")
+        return False
+
+    _clear_restart_launch_callback(application)
+
+    def launch_after_shutdown():
+        _clear_restart_launch_callback(application)
+        _launch_painter_detached()
+
+    _RESTART_LAUNCH_CALLBACK = launch_after_shutdown
+    application.aboutToQuit.connect(launch_after_shutdown)
+    try:
+        close_accepted = bool(main_window.close())
+    except Exception:
+        _clear_restart_launch_callback(application)
+        _error("Could not request Painter restart:\n" + traceback.format_exc())
+        return False
+    if not close_accepted:
+        _clear_restart_launch_callback(application)
+    return close_accepted
 
 
 def _plugin_root():
@@ -1493,6 +1591,7 @@ class UpdateManager(QtCore.QObject):
         self._redirect_count = 0
         self._timed_out = False
         self._shutting_down = False
+        self._restart_prompt_open = False
         self._network = QtNetwork.QNetworkAccessManager(self)
         self._timeout_timer = QtCore.QTimer(self)
         self._timeout_timer.setSingleShot(True)
@@ -1604,6 +1703,39 @@ class UpdateManager(QtCore.QObject):
             return
         self._set_state("downloading", progress=0)
         self._start_request(url, "download")
+
+    def prompt_restart(self, parent=None):
+        if (
+                self._shutting_down
+                or self.state != "restart"
+                or self._restart_prompt_open):
+            return
+        config = _load_config()
+        parent = (
+            parent
+            or QtWidgets.QApplication.activeWindow()
+            or substance_painter.ui.get_main_window())
+        dialog = QtWidgets.QMessageBox(parent)
+        dialog.setWindowTitle(_tr("restart_prompt_title", config))
+        dialog.setIcon(QtWidgets.QMessageBox.Information)
+        dialog.setTextFormat(QtCore.Qt.PlainText)
+        dialog.setText(_tr("restart_prompt_message", config).format(
+            version=self.latest_version or PLUGIN_VERSION))
+        later_button = dialog.addButton(
+            _tr("restart_later", config),
+            QtWidgets.QMessageBox.RejectRole)
+        restart_button = dialog.addButton(
+            _tr("restart_now", config),
+            QtWidgets.QMessageBox.AcceptRole)
+        dialog.setDefaultButton(later_button)
+        dialog.setEscapeButton(later_button)
+        self._restart_prompt_open = True
+        try:
+            dialog.exec()
+        finally:
+            self._restart_prompt_open = False
+        if dialog.clickedButton() is restart_button:
+            QtCore.QTimer.singleShot(0, _request_painter_restart)
 
     def _start_request(self, url, purpose, redirect_count=0):
         request_url = QtCore.QUrl(str(url))
@@ -1831,6 +1963,7 @@ class UpdateManager(QtCore.QObject):
             self._set_state("restart", progress=100)
             _log("Installed update V%s; restart Painter to load it." %
                  self.latest_version)
+            QtCore.QTimer.singleShot(0, self.prompt_restart)
         except Exception as exception:
             if backup_ready:
                 try:
@@ -4438,7 +4571,7 @@ class SettingsDialog(QtWidgets.QDialog):
         status_text = ""
         button_text = _tr("check_updates", config)
         button_enabled = state in (
-            "idle", "latest", "no_releases", "available", "error")
+            "idle", "latest", "no_releases", "available", "restart", "error")
         show_progress = state in ("checking", "downloading", "installing")
 
         if state == "checking":
@@ -4502,6 +4635,9 @@ class SettingsDialog(QtWidgets.QDialog):
             self._bind_update_manager()
             manager = self._update_manager
         if manager is None:
+            return
+        if manager.state == "restart":
+            manager.prompt_restart(self)
             return
         if manager.state != "available":
             manager.check_for_updates(force=True)

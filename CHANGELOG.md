@@ -4,6 +4,13 @@ All notable changes to Radial Layer Tools are documented here.
 
 ## Unreleased
 
+## 1.0.2 - 2026-07-22
+
+- Added a restart confirmation after a successful in-plugin update.
+- Added Restart later and Restart now actions in English and Chinese.
+- Restart now uses Painter's normal window close flow so unsaved projects receive Painter's native save prompt.
+- Painter is relaunched only after the requested close is accepted.
+
 ## 1.0.1 - 2026-07-22
 
 - Fixed GitHub release downloads by safely following asset redirects.
