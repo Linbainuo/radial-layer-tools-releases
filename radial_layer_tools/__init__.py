@@ -23,6 +23,7 @@ CONFIG_FILE = "radial_layer_tools_config.json"
 PLUGIN_VERSION = "1.0.0"
 PLUGIN_BUILD = "2026.07.22-v1.0.0-release"
 GITHUB_REPOSITORY = "Linbainuo/radial-layer-tools-releases"
+GITHUB_REPOSITORY_URL = "https://github.com/" + GITHUB_REPOSITORY
 GITHUB_LATEST_RELEASE_API = (
     "https://api.github.com/repos/%s/releases/latest" % GITHUB_REPOSITORY)
 UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
@@ -266,7 +267,8 @@ ICON_FILES = {
     "delete": "delete.png",
     "settings": "gear.png",
     "back": "back.png",
-    "reset": "reset.png"
+    "reset": "reset.png",
+    "github": "github.svg"
 }
 
 
@@ -451,6 +453,7 @@ TRANSLATIONS = {
         "no_active_stack": "No active texture set stack. Open a Painter project first.",
         "blur_missing": "Could not find a Blur filter resource in the Painter shelves.",
         "updates": "Updates",
+        "open_repository": "Open GitHub repository",
         "auto_check_updates": "Check automatically",
         "check_updates": "Check for updates",
         "checking_updates": "Checking...",
@@ -550,6 +553,7 @@ TRANSLATIONS = {
         "no_active_stack": "没有活动的纹理集。请先打开 Painter 项目。",
         "blur_missing": "没有在 Painter 资源库中找到 Blur/模糊滤镜。",
         "updates": "更新",
+        "open_repository": "打开 GitHub 仓库",
         "auto_check_updates": "自动检查更新",
         "check_updates": "检查更新",
         "checking_updates": "正在检查...",
@@ -3362,6 +3366,21 @@ class SettingsDialog(QtWidgets.QDialog):
         properties_layout.addLayout(self.form)
         properties_layout.addStretch(1)
 
+        self.repository_button = QtWidgets.QToolButton(self.properties_page)
+        self.repository_button.setObjectName("repositoryButton")
+        self.repository_button.setToolButtonStyle(
+            QtCore.Qt.ToolButtonTextBesideIcon)
+        self.repository_button.setIcon(QtGui.QIcon(_icon_pixmap("github")))
+        self.repository_button.setIconSize(QtCore.QSize(18, 18))
+        self.repository_button.setText(GITHUB_REPOSITORY)
+        self.repository_button.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.repository_button.setFixedHeight(36)
+        self.repository_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.repository_button.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.repository_button.clicked.connect(self._open_repository)
+        properties_layout.addWidget(self.repository_button)
+
         self.update_section = QtWidgets.QFrame(self.properties_page)
         self.update_section.setObjectName("updateSection")
         update_layout = QtWidgets.QVBoxLayout(self.update_section)
@@ -3524,6 +3543,15 @@ class SettingsDialog(QtWidgets.QDialog):
             QFrame#updateSection {
                 background: transparent; border-top: 1px solid #424242;
             }
+            QToolButton#repositoryButton {
+                background: transparent; color: #cfd1d3;
+                border: 1px solid #444648; border-radius: 3px;
+                padding: 0 9px; text-align: left;
+            }
+            QToolButton#repositoryButton:hover {
+                background: #363738; color: #f0f0f0; border-color: #626568;
+            }
+            QToolButton#repositoryButton:pressed { background: #252627; }
             QLabel#updateTitleLabel {
                 color: #d9d9d9; font-size: 12px; font-weight: 600;
             }
@@ -4275,6 +4303,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self.hint_label.setText(_tr("editor_hint", config))
         self.update_title_label.setText(_tr("updates", config))
         self.auto_update_checkbox.setText(_tr("auto_check_updates", config))
+        repository_tooltip = _tr("open_repository", config) + "\n" + GITHUB_REPOSITORY_URL
+        self.repository_button.setToolTip(repository_tooltip)
+        self.repository_button.setAccessibleName(repository_tooltip)
 
         was_blocked = self.language_combo.blockSignals(True)
         self.language_combo.setItemText(0, _tr("language_painter", config))
@@ -4407,6 +4438,9 @@ class SettingsDialog(QtWidgets.QDialog):
         dialog.exec()
         if dialog.clickedButton() is install_button:
             manager.download_and_install()
+
+    def _open_repository(self):
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl(GITHUB_REPOSITORY_URL))
 
     def _wheel_radius_changed(self, value):
         self.inner_radius_spin.setMaximum(max(45, int(value) - 28))
