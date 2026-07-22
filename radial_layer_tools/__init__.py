@@ -3372,7 +3372,7 @@ class SettingsDialog(QtWidgets.QDialog):
             QtCore.Qt.ToolButtonTextBesideIcon)
         self.repository_button.setIcon(QtGui.QIcon(_icon_pixmap("github")))
         self.repository_button.setIconSize(QtCore.QSize(18, 18))
-        self.repository_button.setText(GITHUB_REPOSITORY)
+        self.repository_button.setText("Linbainuo")
         self.repository_button.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.repository_button.setFixedHeight(36)
@@ -3545,13 +3545,14 @@ class SettingsDialog(QtWidgets.QDialog):
             }
             QToolButton#repositoryButton {
                 background: transparent; color: #cfd1d3;
-                border: 1px solid #444648; border-radius: 3px;
-                padding: 0 9px; text-align: left;
+                border: none; padding: 0; text-align: left;
             }
             QToolButton#repositoryButton:hover {
-                background: #363738; color: #f0f0f0; border-color: #626568;
+                background: transparent; color: #f0f0f0;
             }
-            QToolButton#repositoryButton:pressed { background: #252627; }
+            QToolButton#repositoryButton:pressed {
+                background: transparent; color: #aeb1b4;
+            }
             QLabel#updateTitleLabel {
                 color: #d9d9d9; font-size: 12px; font-weight: 600;
             }
