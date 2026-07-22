@@ -4,6 +4,12 @@ All notable changes to Radial Layer Tools are documented here.
 
 ## Unreleased
 
+## 1.0.3 - 2026-07-22
+
+- Replaced the Windows command-string relaunch with a bundled restart helper.
+- The helper receives Painter paths as separate arguments and waits for the old process to exit before relaunching.
+- Fixed the one-time Windows "cannot find \\" error after Restart now.
+
 ## 1.0.2 - 2026-07-22
 
 - Added a restart confirmation after a successful in-plugin update.

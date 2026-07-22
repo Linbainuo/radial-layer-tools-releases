@@ -20,8 +20,8 @@ import substance_painter.ui
 
 
 CONFIG_FILE = "radial_layer_tools_config.json"
-PLUGIN_VERSION = "1.0.2"
-PLUGIN_BUILD = "2026.07.22-v1.0.2-release"
+PLUGIN_VERSION = "1.0.3"
+PLUGIN_BUILD = "2026.07.22-v1.0.3-release"
 GITHUB_REPOSITORY = "Linbainuo/radial-layer-tools-releases"
 GITHUB_REPOSITORY_URL = "https://github.com/" + GITHUB_REPOSITORY
 GITHUB_LATEST_RELEASE_API = (
@@ -673,23 +673,43 @@ def _launch_painter_detached():
         _error("Could not restart Painter: executable was not found.")
         return False
     working_directory = os.path.dirname(executable)
-    if os.name == "nt":
-        command_shell = os.environ.get("COMSPEC", "cmd.exe")
-        escaped_directory = working_directory.replace('"', '""')
-        escaped_executable = executable.replace('"', '""')
-        command = (
-            'ping 127.0.0.1 -n 3 >nul & start "" /D "{directory}" '
-            '"{executable}"'
-        ).format(
-            directory=escaped_directory,
-            executable=escaped_executable)
+    helper_path = os.path.join(_plugin_root(), "restart_helper.py")
+    interpreter_names = (
+        ("pythonw.exe", "python.exe")
+        if os.name == "nt"
+        else ("python3", "python"))
+    interpreter_roots = [
+        str(getattr(sys, "prefix", "") or ""),
+        str(getattr(sys, "base_prefix", "") or ""),
+        os.path.join(working_directory, "resources", "pythonsdk")
+    ]
+    interpreter = ""
+    for root in interpreter_roots:
+        for name in interpreter_names:
+            candidate = os.path.realpath(os.path.join(root, name))
+            if os.path.isfile(candidate):
+                interpreter = candidate
+                break
+        if interpreter:
+            break
+    if interpreter and os.path.isfile(helper_path):
+        log_path = os.path.join(
+            _update_cache_directory(), "restart-helper.log")
         result = QtCore.QProcess.startDetached(
-            command_shell, ["/D", "/S", "/C", command], working_directory)
+            interpreter,
+            [
+                helper_path,
+                str(os.getpid()),
+                executable,
+                working_directory,
+                log_path
+            ],
+            _plugin_root())
     else:
+        _error(
+            "Painter restart helper was not found; starting Painter directly.")
         result = QtCore.QProcess.startDetached(
-            "/bin/sh",
-            ["-c", 'sleep 2; exec "$1"', "radial-layer-tools", executable],
-            working_directory)
+            executable, [], working_directory)
     success = bool(result[0]) if isinstance(result, tuple) else bool(result)
     if not success:
         _error("Could not start Painter after shutdown.")
