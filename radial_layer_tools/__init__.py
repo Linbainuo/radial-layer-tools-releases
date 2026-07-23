@@ -20,8 +20,8 @@ import substance_painter.ui
 
 
 CONFIG_FILE = "radial_layer_tools_config.json"
-PLUGIN_VERSION = "1.0.1"
-PLUGIN_BUILD = "2026.07.22-v1.0.1-release"
+PLUGIN_VERSION = "1.0.2"
+PLUGIN_BUILD = "2026.07.23-v1.0.2-release"
 GITHUB_REPOSITORY = "Linbainuo/radial-layer-tools-releases"
 GITHUB_REPOSITORY_URL = "https://github.com/" + GITHUB_REPOSITORY
 GITHUB_LATEST_RELEASE_API = (
@@ -211,12 +211,67 @@ DEFAULT_CONFIG = {
             "icon": "style:views/icons/effects_paint.svg"
         },
         {
+            "id": "paint_effect",
+            "labels": {"en": "Add Paint", "zh_CN": "添加绘图"},
+            "descriptions": {
+                "en": "Insert a paint effect at the current stack position",
+                "zh_CN": "在当前堆栈位置添加绘图效果"
+            },
+            "action": "add_paint_effect",
+            "category": "effects",
+            "icon": "style:views/icons/effects_paint.svg"
+        },
+        {
+            "id": "fill_effect",
+            "labels": {"en": "Add Fill", "zh_CN": "添加填充"},
+            "descriptions": {
+                "en": "Insert a fill effect at the current stack position",
+                "zh_CN": "在当前堆栈位置添加填充效果"
+            },
+            "action": "add_fill_effect",
+            "category": "effects",
+            "icon": "style:views/icons/effects_fill.svg"
+        },
+        {
             "id": "black_mask",
             "labels": {"en": "Black Mask", "zh_CN": "黑色遮罩"},
             "descriptions": {"en": "Add to selected layer", "zh_CN": "添加到当前图层"},
             "action": "add_black_mask",
             "category": "masks",
             "icon": "style:views/icons/thumbnail_add_mask.svg"
+        },
+        {
+            "id": "compare_mask",
+            "labels": {"en": "Add Compare Mask", "zh_CN": "添加对比遮罩"},
+            "descriptions": {
+                "en": "Insert a compare mask in the selected layer mask",
+                "zh_CN": "在当前图层遮罩中添加对比遮罩"
+            },
+            "action": "add_compare_mask",
+            "category": "masks",
+            "icon": "style:views/icons/effects_comparemask.svg"
+        },
+        {
+            "id": "filter_effect",
+            "labels": {"en": "Add Filter", "zh_CN": "添加滤镜"},
+            "descriptions": {
+                "en": "Insert an empty filter effect",
+                "zh_CN": "添加一个空滤镜效果"
+            },
+            "action": "add_filter_effect",
+            "category": "filters",
+            "icon": "style:views/icons/effects_substance.svg"
+        },
+        {
+            "id": "anchor_point",
+            "labels": {"en": "Add Anchor Point", "zh_CN": "添加锚定点"},
+            "descriptions": {
+                "en": "Insert an anchor point at the current stack position",
+                "zh_CN": "在当前堆栈位置添加锚定点"
+            },
+            "action": "add_anchor_point",
+            "category": "effects",
+            "icon": "style:views/icons/effects_anchor.svg"
         },
         {
             "id": "blur",
@@ -249,7 +304,12 @@ DEFAULT_CONFIG = {
 OFFICIAL_ICONS = {
     "fill_layer": "style:views/icons/effects_fill.svg",
     "paint_layer": "style:views/icons/effects_paint.svg",
+    "paint_effect": "style:views/icons/effects_paint.svg",
+    "fill_effect": "style:views/icons/effects_fill.svg",
     "black_mask": "style:views/icons/thumbnail_add_mask.svg",
+    "compare_mask": "style:views/icons/effects_comparemask.svg",
+    "filter_effect": "style:views/icons/effects_substance.svg",
+    "anchor_point": "style:views/icons/effects_anchor.svg",
     "blur": "style:views/icons/effects_substance.svg",
     "levels": "style:views/icons/effects_levels.svg",
     "color_selection": "style:views/icons/effects_colorselection.svg"
@@ -259,7 +319,12 @@ OFFICIAL_ICONS = {
 ICON_FILES = {
     "fill_layer": "fill_layer.png",
     "paint_layer": "paint_layer.png",
+    "paint_effect": "paint_layer.png",
+    "fill_effect": "fill_layer.png",
     "black_mask": "black_mask.png",
+    "compare_mask": "compare_mask.png",
+    "filter_effect": "blur.png",
+    "anchor_point": "anchor_point.png",
     "blur": "blur.png",
     "levels": "levels.png",
     "color_selection": "color_selection.png",
@@ -350,10 +415,12 @@ LEGACY_ICONS = {
 
 
 FILTER_ACTION_PREFIX = "add_filter_resource:"
-COMMAND_CATEGORY_ORDER = ("layers", "masks", "adjustments", "filters", "other")
+COMMAND_CATEGORY_ORDER = (
+    "layers", "masks", "effects", "adjustments", "filters", "other")
 COMMAND_CATEGORY_KEYS = {
     "layers": "category_layers",
     "masks": "category_masks",
+    "effects": "category_effects",
     "adjustments": "category_adjustments",
     "filters": "category_filters",
     "other": "category_other"
@@ -361,9 +428,14 @@ COMMAND_CATEGORY_KEYS = {
 COMMAND_CATEGORY_BY_ID = {
     "fill_layer": "layers",
     "paint_layer": "layers",
+    "paint_effect": "effects",
+    "fill_effect": "effects",
     "black_mask": "masks",
+    "compare_mask": "masks",
     "color_selection": "masks",
+    "anchor_point": "effects",
     "levels": "adjustments",
+    "filter_effect": "filters",
     "blur": "filters"
 }
 ROLE_ITEM_ID = QtCore.Qt.UserRole
@@ -377,7 +449,12 @@ ROW_CATEGORY = "category"
 FALLBACK_GLYPHS = {
     "fill_layer": "+",
     "paint_layer": "P",
+    "paint_effect": "P",
+    "fill_effect": "F",
     "black_mask": "M",
+    "compare_mask": "C",
+    "filter_effect": "S",
+    "anchor_point": "A",
     "blur": "B",
     "levels": "L",
     "color_selection": "C"
@@ -442,6 +519,7 @@ TRANSLATIONS = {
         "restore_command": "Double-click to restore to the wheel",
         "category_layers": "Layers",
         "category_masks": "Masks",
+        "category_effects": "Effects",
         "category_adjustments": "Adjustments",
         "category_filters": "Filters",
         "category_other": "Other",
@@ -450,6 +528,7 @@ TRANSLATIONS = {
         "node_blur": "Radial Blur",
         "node_levels": "Radial Levels",
         "black_mask_exists": "The selected layer already has a mask.",
+        "anchor_point_name": "Anchor Point",
         "no_active_stack": "No active texture set stack. Open a Painter project first.",
         "blur_missing": "Could not find a Blur filter resource in the Painter shelves.",
         "updates": "Updates",
@@ -552,6 +631,7 @@ TRANSLATIONS = {
         "restore_command": "双击恢复到轮盘",
         "category_layers": "图层",
         "category_masks": "遮罩",
+        "category_effects": "效果",
         "category_adjustments": "调整",
         "category_filters": "滤镜",
         "category_other": "其他",
@@ -560,6 +640,7 @@ TRANSLATIONS = {
         "node_blur": "轮盘模糊",
         "node_levels": "轮盘色阶",
         "black_mask_exists": "当前图层已经有遮罩，没有覆盖已有遮罩。",
+        "anchor_point_name": "锚定点",
         "no_active_stack": "没有活动的纹理集。请先打开 Painter 项目。",
         "blur_missing": "没有在 Painter 资源库中找到 Blur/模糊滤镜。",
         "updates": "更新",
@@ -783,6 +864,31 @@ def _icon_pixmap(item_id, source=""):
                 pixmap = QtGui.QPixmap(source)
         _ICON_PIXMAP_CACHE[cache_key] = pixmap
     return _ICON_PIXMAP_CACHE[cache_key]
+
+
+def _ensure_packaged_builtin_icons():
+    icons_dir = os.path.join(_plugin_root(), "icons")
+    try:
+        os.makedirs(icons_dir, exist_ok=True)
+    except OSError:
+        return
+    exported_paths = set()
+    for item_id, source in OFFICIAL_ICONS.items():
+        path = _icon_path(item_id)
+        if not path or path in exported_paths or os.path.exists(path):
+            continue
+        exported_paths.add(path)
+        icon = QtGui.QIcon(source)
+        if icon.isNull():
+            continue
+        pixmap = icon.pixmap(64, 64)
+        if pixmap.isNull():
+            continue
+        try:
+            if pixmap.save(path, "PNG"):
+                _log("Cached Painter icon: " + path)
+        except Exception:
+            _error("Failed to cache Painter icon:\n" + traceback.format_exc())
 
 
 def _radial_toolbar_icon():
@@ -2308,6 +2414,18 @@ def _add_paint_layer(select_created=True):
     return node
 
 
+def _add_paint_effect():
+    node = sp.layerstack.insert_paint(_effect_insert_position())
+    _select_node(node)
+    return node
+
+
+def _add_fill_effect():
+    node = sp.layerstack.insert_fill(_effect_insert_position())
+    _select_node(node)
+    return node
+
+
 def _action_unavailable(action):
     if action != "add_black_mask":
         return False
@@ -2331,6 +2449,42 @@ def _add_black_mask():
     except Exception:
         pass
     return layer
+
+
+def _add_compare_mask():
+    node = sp.layerstack.insert_compare_mask_effect(_mask_insert_position())
+    _select_node(node)
+    return node
+
+
+def _add_filter_effect():
+    node = sp.layerstack.insert_filter_effect(_effect_insert_position())
+    _select_node(node)
+    return node
+
+
+def _next_anchor_point_name():
+    base_name = _tr("anchor_point_name")
+    existing_names = set()
+    try:
+        for node, _selection_type in _all_selection_slots():
+            if hasattr(node, "get_name"):
+                existing_names.add(str(node.get_name()))
+    except Exception:
+        pass
+    if base_name not in existing_names:
+        return base_name
+    index = 2
+    while "%s %d" % (base_name, index) in existing_names:
+        index += 1
+    return "%s %d" % (base_name, index)
+
+
+def _add_anchor_point():
+    node = sp.layerstack.insert_anchor_point_effect(
+        _effect_insert_position(), _next_anchor_point_name())
+    _select_node(node)
+    return node
 
 
 def _find_filter_resource(names):
@@ -2505,8 +2659,18 @@ def _run_action(action):
             _add_fill_layer()
         elif action == "add_paint_layer":
             _add_paint_layer()
+        elif action == "add_paint_effect":
+            _add_paint_effect()
+        elif action == "add_fill_effect":
+            _add_fill_effect()
         elif action == "add_black_mask":
             _add_black_mask()
+        elif action == "add_compare_mask":
+            _add_compare_mask()
+        elif action == "add_filter_effect":
+            _add_filter_effect()
+        elif action == "add_anchor_point":
+            _add_anchor_point()
         elif action == "add_blur_filter":
             _add_blur_filter()
         elif action == "add_levels":
@@ -5533,6 +5697,7 @@ def start_plugin():
     config = _load_config()
     _RUNTIME_CONFIG = copy.deepcopy(config)
     app = QtWidgets.QApplication.instance()
+    _ensure_packaged_builtin_icons()
 
     if _KEY_FILTER is None:
         _KEY_FILTER = HoldKeyFilter(config, main_window)

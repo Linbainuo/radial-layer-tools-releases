@@ -11,14 +11,15 @@ Open-source radial layer menu for Substance 3D Painter. Hold the shortcut, move 
 ## 功能 / Features
 
 - 可配置的径向菜单与多套菜单预设
-- 填充图层、画笔图层、黑色遮罩、颜色选择和色阶命令
+- 填充图层、画笔图层、绘图效果、填充效果、黑色遮罩、对比遮罩、颜色选择、锚定点和色阶命令
+- 可直接添加空滤镜，再在 Painter 中选择具体滤镜资源
 - Painter 滤镜目录、双语搜索与本地图标
 - 自定义轮盘快捷键和命令快捷键
 - 图层导航、显示/隐藏和菜单编辑
 - 中文、英文以及跟随 Painter 语言
 - 在插件设置页异步检查、下载并安装 GitHub Releases 更新
 - Configurable radial menus and menu presets
-- Layer, mask, adjustment, filter, and shortcut commands
+- Layer, paint/fill effect, compare mask, anchor point, adjustment, filter, and shortcut commands
 - Chinese/English command search and Painter-language following
 
 ## 安装 / Installation
