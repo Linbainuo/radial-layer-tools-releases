@@ -4,13 +4,15 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
 import traceback
 import ctypes
 import ctypes.wintypes
 import time
+import zipfile
 
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
 
 import substance_painter as sp
 import substance_painter.logging
@@ -18,8 +20,14 @@ import substance_painter.ui
 
 
 CONFIG_FILE = "radial_layer_tools_config.json"
-PLUGIN_VERSION = "1.0.0"
-PLUGIN_BUILD = "2026.07.22-v1.0.0-release"
+PLUGIN_VERSION = "1.0.2"
+PLUGIN_BUILD = "2026.07.23-v1.0.2-release"
+GITHUB_REPOSITORY = "Linbainuo/radial-layer-tools-releases"
+GITHUB_REPOSITORY_URL = "https://github.com/" + GITHUB_REPOSITORY
+GITHUB_LATEST_RELEASE_API = (
+    "https://api.github.com/repos/%s/releases/latest" % GITHUB_REPOSITORY)
+UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
+UPDATE_REQUEST_TIMEOUT_MS = 15000
 
 
 QML = r'''
@@ -171,6 +179,7 @@ Item {
 DEFAULT_CONFIG = {
     "language": "painter",
     "shortcut": {"key": "`", "modifiers": []},
+    "auto_check_updates": True,
     "command_shortcuts": [],
     "radius": 128,
     "dead_zone_radius": 42,
@@ -202,12 +211,78 @@ DEFAULT_CONFIG = {
             "icon": "style:views/icons/effects_paint.svg"
         },
         {
+            "id": "generator_effect",
+            "labels": {"en": "Add Generator", "zh_CN": "添加生成器"},
+            "descriptions": {
+                "en": "Insert an empty generator effect",
+                "zh_CN": "添加一个空生成器效果"
+            },
+            "action": "add_generator_effect",
+            "category": "effects",
+            "icon": "style:views/icons/effects_generator.svg"
+        },
+        {
+            "id": "paint_effect",
+            "labels": {"en": "Add Paint", "zh_CN": "添加绘图"},
+            "descriptions": {
+                "en": "Insert a paint effect at the current stack position",
+                "zh_CN": "在当前堆栈位置添加绘图效果"
+            },
+            "action": "add_paint_effect",
+            "category": "effects",
+            "icon": "style:views/icons/effects_paint.svg"
+        },
+        {
+            "id": "fill_effect",
+            "labels": {"en": "Add Fill", "zh_CN": "添加填充"},
+            "descriptions": {
+                "en": "Insert a fill effect at the current stack position",
+                "zh_CN": "在当前堆栈位置添加填充效果"
+            },
+            "action": "add_fill_effect",
+            "category": "effects",
+            "icon": "style:views/icons/effects_fill.svg"
+        },
+        {
             "id": "black_mask",
             "labels": {"en": "Black Mask", "zh_CN": "黑色遮罩"},
             "descriptions": {"en": "Add to selected layer", "zh_CN": "添加到当前图层"},
             "action": "add_black_mask",
             "category": "masks",
             "icon": "style:views/icons/thumbnail_add_mask.svg"
+        },
+        {
+            "id": "compare_mask",
+            "labels": {"en": "Add Compare Mask", "zh_CN": "添加对比遮罩"},
+            "descriptions": {
+                "en": "Insert a compare mask in the selected layer mask",
+                "zh_CN": "在当前图层遮罩中添加对比遮罩"
+            },
+            "action": "add_compare_mask",
+            "category": "effects",
+            "icon": "style:views/icons/effects_comparemask.svg"
+        },
+        {
+            "id": "filter_effect",
+            "labels": {"en": "Add Filter", "zh_CN": "添加滤镜"},
+            "descriptions": {
+                "en": "Insert an empty filter effect",
+                "zh_CN": "添加一个空滤镜效果"
+            },
+            "action": "add_filter_effect",
+            "category": "effects",
+            "icon": "style:views/icons/effects_substance.svg"
+        },
+        {
+            "id": "anchor_point",
+            "labels": {"en": "Add Anchor Point", "zh_CN": "添加锚定点"},
+            "descriptions": {
+                "en": "Insert an anchor point at the current stack position",
+                "zh_CN": "在当前堆栈位置添加锚定点"
+            },
+            "action": "add_anchor_point",
+            "category": "effects",
+            "icon": "style:views/icons/effects_anchor.svg"
         },
         {
             "id": "blur",
@@ -219,18 +294,18 @@ DEFAULT_CONFIG = {
         },
         {
             "id": "levels",
-            "labels": {"en": "Levels", "zh_CN": "色阶"},
+            "labels": {"en": "Add Levels", "zh_CN": "添加色阶"},
             "descriptions": {"en": "Adjust active channel", "zh_CN": "调整当前通道"},
             "action": "add_levels",
-            "category": "adjustments",
+            "category": "effects",
             "icon": "style:views/icons/effects_levels.svg"
         },
         {
             "id": "color_selection",
-            "labels": {"en": "Color Selection", "zh_CN": "颜色选择"},
+            "labels": {"en": "Add Color Selection", "zh_CN": "添加颜色选择"},
             "descriptions": {"en": "Add in mask stack", "zh_CN": "添加到遮罩下"},
             "action": "add_color_selection",
-            "category": "masks",
+            "category": "effects",
             "icon": "style:views/icons/effects_colorselection.svg"
         }
     ]
@@ -240,7 +315,13 @@ DEFAULT_CONFIG = {
 OFFICIAL_ICONS = {
     "fill_layer": "style:views/icons/effects_fill.svg",
     "paint_layer": "style:views/icons/effects_paint.svg",
+    "generator_effect": "style:views/icons/effects_generator.svg",
+    "paint_effect": "style:views/icons/effects_paint.svg",
+    "fill_effect": "style:views/icons/effects_fill.svg",
     "black_mask": "style:views/icons/thumbnail_add_mask.svg",
+    "compare_mask": "style:views/icons/effects_comparemask.svg",
+    "filter_effect": "style:views/icons/effects_substance.svg",
+    "anchor_point": "style:views/icons/effects_anchor.svg",
     "blur": "style:views/icons/effects_substance.svg",
     "levels": "style:views/icons/effects_levels.svg",
     "color_selection": "style:views/icons/effects_colorselection.svg"
@@ -250,7 +331,13 @@ OFFICIAL_ICONS = {
 ICON_FILES = {
     "fill_layer": "fill_layer.png",
     "paint_layer": "paint_layer.png",
+    "generator_effect": "generator.png",
+    "paint_effect": "paint_layer.png",
+    "fill_effect": "fill_layer.png",
     "black_mask": "black_mask.png",
+    "compare_mask": "compare_mask.png",
+    "filter_effect": "blur.png",
+    "anchor_point": "anchor_point.png",
     "blur": "blur.png",
     "levels": "levels.png",
     "color_selection": "color_selection.png",
@@ -258,7 +345,8 @@ ICON_FILES = {
     "delete": "delete.png",
     "settings": "gear.png",
     "back": "back.png",
-    "reset": "reset.png"
+    "reset": "reset.png",
+    "github": "github.svg"
 }
 
 
@@ -340,10 +428,12 @@ LEGACY_ICONS = {
 
 
 FILTER_ACTION_PREFIX = "add_filter_resource:"
-COMMAND_CATEGORY_ORDER = ("layers", "masks", "adjustments", "filters", "other")
+COMMAND_CATEGORY_ORDER = (
+    "layers", "masks", "effects", "adjustments", "filters", "other")
 COMMAND_CATEGORY_KEYS = {
     "layers": "category_layers",
     "masks": "category_masks",
+    "effects": "category_effects",
     "adjustments": "category_adjustments",
     "filters": "category_filters",
     "other": "category_other"
@@ -351,10 +441,29 @@ COMMAND_CATEGORY_KEYS = {
 COMMAND_CATEGORY_BY_ID = {
     "fill_layer": "layers",
     "paint_layer": "layers",
+    "generator_effect": "effects",
+    "paint_effect": "effects",
+    "fill_effect": "effects",
     "black_mask": "masks",
-    "color_selection": "masks",
-    "levels": "adjustments",
+    "compare_mask": "effects",
+    "color_selection": "effects",
+    "anchor_point": "effects",
+    "levels": "effects",
+    "filter_effect": "effects",
     "blur": "filters"
+}
+EFFECT_COMMAND_ORDER = (
+    "generator_effect",
+    "paint_effect",
+    "fill_effect",
+    "levels",
+    "compare_mask",
+    "filter_effect",
+    "color_selection",
+    "anchor_point"
+)
+EFFECT_COMMAND_RANK = {
+    item_id: index for index, item_id in enumerate(EFFECT_COMMAND_ORDER)
 }
 ROLE_ITEM_ID = QtCore.Qt.UserRole
 ROLE_ITEM_ENABLED = QtCore.Qt.UserRole + 1
@@ -367,7 +476,13 @@ ROW_CATEGORY = "category"
 FALLBACK_GLYPHS = {
     "fill_layer": "+",
     "paint_layer": "P",
+    "generator_effect": "G",
+    "paint_effect": "P",
+    "fill_effect": "F",
     "black_mask": "M",
+    "compare_mask": "C",
+    "filter_effect": "S",
+    "anchor_point": "A",
     "blur": "B",
     "levels": "L",
     "color_selection": "C"
@@ -426,12 +541,14 @@ TRANSLATIONS = {
         "close": "Cancel",
         "highlight_color": "Highlight",
         "selected_status": "Selected: {name}",
+        "unsaved": "Unsaved",
         "editor_hint": "Drag a wheel segment to reorder it. Drag outside the wheel to remove it.",
         "move_to_position": "Move to position {position}",
         "release_to_remove": "Release to remove",
         "restore_command": "Double-click to restore to the wheel",
         "category_layers": "Layers",
         "category_masks": "Masks",
+        "category_effects": "Effects",
         "category_adjustments": "Adjustments",
         "category_filters": "Filters",
         "category_other": "Other",
@@ -440,8 +557,51 @@ TRANSLATIONS = {
         "node_blur": "Radial Blur",
         "node_levels": "Radial Levels",
         "black_mask_exists": "The selected layer already has a mask.",
+        "anchor_point_name": "Anchor Point",
         "no_active_stack": "No active texture set stack. Open a Painter project first.",
-        "blur_missing": "Could not find a Blur filter resource in the Painter shelves."
+        "blur_missing": "Could not find a Blur filter resource in the Painter shelves.",
+        "updates": "Updates",
+        "open_repository": "Open GitHub repository",
+        "auto_check_updates": "Check automatically",
+        "check_updates": "Check for updates",
+        "checking_updates": "Checking...",
+        "up_to_date": "V{version} is up to date",
+        "no_releases": "No public release is available yet",
+        "update_available": "V{version} is available",
+        "download_update": "Download and install",
+        "downloading_update": "Downloading... {progress}%",
+        "installing_update": "Installing...",
+        "restart_to_finish": "Installed. Restart Painter to finish.",
+        "restart_painter": "Restart Painter",
+        "restart_prompt_title": "Restart Painter",
+        "restart_prompt_message": (
+            "V{version} was installed successfully. Restart Painter now to load "
+            "the update?\n\nIf the current project has unsaved changes, Painter "
+            "will ask whether to save them."
+        ),
+        "restart_later": "Restart later",
+        "restart_now": "Restart now",
+        "update_failed": "Update failed: {detail}",
+        "update_confirm_title": "Install update",
+        "update_confirm_message": (
+            "Download and install V{version}?\n\n"
+            "Your radial menu configuration will be preserved. Restart Painter "
+            "after installation to load the new version."
+        ),
+        "confirm_install": "Install",
+        "invalid_version": "The release version is invalid",
+        "release_missing_zip": "The release has no plugin ZIP package",
+        "checksum_missing": "The release package has no SHA-256 digest",
+        "checksum_mismatch": "The downloaded package failed verification",
+        "unsafe_update_redirect": "The update redirected to an untrusted address",
+        "too_many_update_redirects": "The update redirected too many times",
+        "timeout": "The GitHub request timed out",
+        "invalid_update": "The update package is invalid",
+        "version_mismatch": "The package version does not match the release",
+        "update_too_large": "The update package is too large",
+        "unsafe_update_path": "The update package contains an unsafe path",
+        "unsafe_update_link": "The update package contains an unsafe link",
+        "network_error": "Could not connect to GitHub"
     },
     "zh_CN": {
         "dialog_title": "图层轮盘",
@@ -494,12 +654,14 @@ TRANSLATIONS = {
         "close": "取消",
         "highlight_color": "高亮颜色",
         "selected_status": "当前选中：{name}",
+        "unsaved": "未保存",
         "editor_hint": "拖动轮盘扇区可调整位置，拖出轮盘可移除命令。",
         "move_to_position": "移动到位置 {position}",
         "release_to_remove": "松开移除",
         "restore_command": "双击恢复到轮盘",
         "category_layers": "图层",
         "category_masks": "遮罩",
+        "category_effects": "特效",
         "category_adjustments": "调整",
         "category_filters": "滤镜",
         "category_other": "其他",
@@ -508,8 +670,49 @@ TRANSLATIONS = {
         "node_blur": "轮盘模糊",
         "node_levels": "轮盘色阶",
         "black_mask_exists": "当前图层已经有遮罩，没有覆盖已有遮罩。",
+        "anchor_point_name": "锚定点",
         "no_active_stack": "没有活动的纹理集。请先打开 Painter 项目。",
-        "blur_missing": "没有在 Painter 资源库中找到 Blur/模糊滤镜。"
+        "blur_missing": "没有在 Painter 资源库中找到 Blur/模糊滤镜。",
+        "updates": "更新",
+        "open_repository": "打开 GitHub 仓库",
+        "auto_check_updates": "自动检查更新",
+        "check_updates": "检查更新",
+        "checking_updates": "正在检查...",
+        "up_to_date": "V{version} 已是最新版本",
+        "no_releases": "目前还没有公开发布版本",
+        "update_available": "发现新版本 V{version}",
+        "download_update": "下载并安装",
+        "downloading_update": "正在下载... {progress}%",
+        "installing_update": "正在安装...",
+        "restart_to_finish": "安装完成，请重启 Painter。",
+        "restart_painter": "重启 Painter",
+        "restart_prompt_title": "重启 Painter",
+        "restart_prompt_message": (
+            "V{version} 已安装完成。是否立即重启 Painter 以载入更新？\n\n"
+            "如果当前项目有未保存的修改，Painter 会询问是否保存。"
+        ),
+        "restart_later": "稍后重启",
+        "restart_now": "立即重启",
+        "update_failed": "更新失败：{detail}",
+        "update_confirm_title": "安装更新",
+        "update_confirm_message": (
+            "确定下载并安装 V{version} 吗？\n\n"
+            "你的轮盘配置会被保留。安装完成后需要重启 Painter 才会载入新版本。"
+        ),
+        "confirm_install": "安装",
+        "invalid_version": "发布版本号无效",
+        "release_missing_zip": "发布版本中没有插件 ZIP 安装包",
+        "checksum_missing": "发布包没有 SHA-256 校验值",
+        "checksum_mismatch": "下载包校验失败",
+        "unsafe_update_redirect": "更新下载跳转到了不受信任的地址",
+        "too_many_update_redirects": "更新下载重定向次数过多",
+        "timeout": "连接 GitHub 超时",
+        "invalid_update": "更新包无效",
+        "version_mismatch": "安装包版本与发布版本不一致",
+        "update_too_large": "更新包体积异常",
+        "unsafe_update_path": "更新包包含不安全的文件路径",
+        "unsafe_update_link": "更新包包含不安全的链接",
+        "network_error": "无法连接 GitHub"
     }
 }
 
@@ -520,6 +723,7 @@ _SETTINGS_ACTION = None
 _TOOLBAR_BUTTON = None
 _SETTINGS_DIALOG = None
 _RUNTIME_CONFIG = None
+_UPDATE_MANAGER = None
 _PAINTER_LANGUAGE_CACHE = None
 _ICON_PIXMAP_CACHE = {}
 _RESOURCE_PIXMAP_CACHE = {}
@@ -534,6 +738,7 @@ _LAST_SLOT_INDEX = None
 _LAST_LAYER_SLOT_INDEX = None
 _LAST_WHEEL_TIME = 0.0
 _LAST_WHEEL_SIGN = 0
+_RESTART_LAUNCH_CALLBACK = None
 
 VK_SHIFT = 0x10
 VK_CONTROL = 0x11
@@ -557,6 +762,108 @@ def _log(message):
 
 def _error(message):
     substance_painter.logging.error("[Radial Layer Tools] " + message)
+
+
+def _current_application_executable():
+    if os.name == "nt":
+        try:
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = ctypes.windll.kernel32.GetModuleFileNameW(
+                None, buffer, len(buffer))
+            if length:
+                return os.path.realpath(buffer.value)
+        except Exception:
+            _error("Could not resolve Painter executable:\n" +
+                   traceback.format_exc())
+    return os.path.realpath(sys.executable)
+
+
+def _launch_painter_detached():
+    executable = _current_application_executable()
+    if not executable or not os.path.isfile(executable):
+        _error("Could not restart Painter: executable was not found.")
+        return False
+    working_directory = os.path.dirname(executable)
+    helper_path = os.path.join(_plugin_root(), "restart_helper.py")
+    interpreter_names = (
+        ("pythonw.exe", "python.exe")
+        if os.name == "nt"
+        else ("python3", "python"))
+    interpreter_roots = [
+        str(getattr(sys, "prefix", "") or ""),
+        str(getattr(sys, "base_prefix", "") or ""),
+        os.path.join(working_directory, "resources", "pythonsdk")
+    ]
+    interpreter = ""
+    for root in interpreter_roots:
+        for name in interpreter_names:
+            candidate = os.path.realpath(os.path.join(root, name))
+            if os.path.isfile(candidate):
+                interpreter = candidate
+                break
+        if interpreter:
+            break
+    if interpreter and os.path.isfile(helper_path):
+        log_path = os.path.join(
+            _update_cache_directory(), "restart-helper.log")
+        result = QtCore.QProcess.startDetached(
+            interpreter,
+            [
+                helper_path,
+                str(os.getpid()),
+                executable,
+                working_directory,
+                log_path
+            ],
+            _plugin_root())
+    else:
+        _error(
+            "Painter restart helper was not found; starting Painter directly.")
+        result = QtCore.QProcess.startDetached(
+            executable, [], working_directory)
+    success = bool(result[0]) if isinstance(result, tuple) else bool(result)
+    if not success:
+        _error("Could not start Painter after shutdown.")
+    return success
+
+
+def _clear_restart_launch_callback(application=None):
+    global _RESTART_LAUNCH_CALLBACK
+    callback = _RESTART_LAUNCH_CALLBACK
+    _RESTART_LAUNCH_CALLBACK = None
+    application = application or QtWidgets.QApplication.instance()
+    if application is not None and callback is not None:
+        try:
+            application.aboutToQuit.disconnect(callback)
+        except (RuntimeError, TypeError):
+            pass
+
+
+def _request_painter_restart():
+    global _RESTART_LAUNCH_CALLBACK
+    application = QtWidgets.QApplication.instance()
+    main_window = substance_painter.ui.get_main_window()
+    if application is None or main_window is None:
+        _error("Could not restart Painter: main window was not found.")
+        return False
+
+    _clear_restart_launch_callback(application)
+
+    def launch_after_shutdown():
+        _clear_restart_launch_callback(application)
+        _launch_painter_detached()
+
+    _RESTART_LAUNCH_CALLBACK = launch_after_shutdown
+    application.aboutToQuit.connect(launch_after_shutdown)
+    try:
+        close_accepted = bool(main_window.close())
+    except Exception:
+        _clear_restart_launch_callback(application)
+        _error("Could not request Painter restart:\n" + traceback.format_exc())
+        return False
+    if not close_accepted:
+        _clear_restart_launch_callback(application)
+    return close_accepted
 
 
 def _plugin_root():
@@ -587,6 +894,31 @@ def _icon_pixmap(item_id, source=""):
                 pixmap = QtGui.QPixmap(source)
         _ICON_PIXMAP_CACHE[cache_key] = pixmap
     return _ICON_PIXMAP_CACHE[cache_key]
+
+
+def _ensure_packaged_builtin_icons():
+    icons_dir = os.path.join(_plugin_root(), "icons")
+    try:
+        os.makedirs(icons_dir, exist_ok=True)
+    except OSError:
+        return
+    exported_paths = set()
+    for item_id, source in OFFICIAL_ICONS.items():
+        path = _icon_path(item_id)
+        if not path or path in exported_paths or os.path.exists(path):
+            continue
+        exported_paths.add(path)
+        icon = QtGui.QIcon(source)
+        if icon.isNull():
+            continue
+        pixmap = icon.pixmap(64, 64)
+        if pixmap.isNull():
+            continue
+        try:
+            if pixmap.save(path, "PNG"):
+                _log("Cached Painter icon: " + path)
+        except Exception:
+            _error("Failed to cache Painter icon:\n" + traceback.format_exc())
 
 
 def _radial_toolbar_icon():
@@ -641,12 +973,12 @@ def _radial_toolbar_icon():
 
 
 def _command_category(item):
-    category = str(item.get("category", "") or "")
-    if category in COMMAND_CATEGORY_ORDER:
-        return category
     item_id = str(item.get("id", "") or "")
     if item_id in COMMAND_CATEGORY_BY_ID:
         return COMMAND_CATEGORY_BY_ID[item_id]
+    category = str(item.get("category", "") or "")
+    if category in COMMAND_CATEGORY_ORDER:
+        return category
     action = str(item.get("action", "") or "")
     if action.startswith(FILTER_ACTION_PREFIX) or action == "add_blur_filter":
         return "filters"
@@ -1043,18 +1375,23 @@ def _merge_filter_catalog(config, force=False):
 
 def _merge_builtin_commands(config):
     items = list(config.get("items", []))
-    known_ids = {
-        str(item.get("id", "")) for item in items if item.get("id")}
-    known_actions = {
-        str(item.get("action", "")) for item in items if item.get("action")}
+    by_id = {
+        str(item.get("id", "")): item for item in items if item.get("id")}
+    by_action = {
+        str(item.get("action", "")): item for item in items if item.get("action")}
     for command in DEFAULT_CONFIG["items"]:
         command_id = str(command.get("id", ""))
         action = str(command.get("action", ""))
-        if command_id in known_ids or action in known_actions:
+        existing = by_id.get(command_id) or by_action.get(action)
+        if existing is not None:
+            for key in ("labels", "descriptions", "action", "category", "icon"):
+                if key in command:
+                    existing[key] = copy.deepcopy(command[key])
             continue
-        items.append(copy.deepcopy(command))
-        known_ids.add(command_id)
-        known_actions.add(action)
+        item = copy.deepcopy(command)
+        items.append(item)
+        by_id[command_id] = item
+        by_action[action] = item
     config["items"] = items
     return config
 
@@ -1202,6 +1539,645 @@ def _active_menu_name(config):
         if str(menu.get("id", "")) == active_id:
             return _menu_preset_name(menu, config)
     return _tr("default_menu", config)
+
+
+def _update_cache_directory():
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    base = local_app_data or os.path.expanduser("~")
+    return os.path.join(base, "RadialLayerTools", "updates")
+
+
+def _update_state_path():
+    return os.path.join(_update_cache_directory(), "state.json")
+
+
+def _load_update_state():
+    try:
+        with open(_update_state_path(), "r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        return state if isinstance(state, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        _error("Failed to read update state:\n" + traceback.format_exc())
+        return {}
+
+
+def _save_update_state(state):
+    directory = _update_cache_directory()
+    os.makedirs(directory, exist_ok=True)
+    path = _update_state_path()
+    temporary_path = path + ".tmp"
+    with open(temporary_path, "w", encoding="utf-8") as handle:
+        json.dump(state, handle, indent=2, ensure_ascii=False)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary_path, path)
+
+
+def _version_tuple(value):
+    match = re.fullmatch(
+        r"\s*[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+].*)?\s*",
+        str(value or ""))
+    if match is None:
+        return ()
+    return tuple(int(part or 0) for part in match.groups())
+
+
+def _network_request_attribute(name):
+    value = getattr(QtNetwork.QNetworkRequest, name, None)
+    if value is not None:
+        return value
+    enum_type = getattr(QtNetwork.QNetworkRequest, "Attribute", None)
+    return getattr(enum_type, name, None) if enum_type is not None else None
+
+
+def _network_redirect_policy(name):
+    value = getattr(QtNetwork.QNetworkRequest, name, None)
+    if value is not None:
+        return value
+    enum_type = getattr(QtNetwork.QNetworkRequest, "RedirectPolicy", None)
+    return getattr(enum_type, name, None) if enum_type is not None else None
+
+
+def _network_redirect_target(reply):
+    attribute = _network_request_attribute("RedirectionTargetAttribute")
+    try:
+        target = reply.attribute(attribute) if attribute is not None else None
+        target_url = QtCore.QUrl(target) if target is not None else QtCore.QUrl()
+        if not target_url.isValid() or target_url.isEmpty():
+            location = bytes(reply.rawHeader(b"Location")).decode(
+                "utf-8", errors="replace").strip()
+            target_url = QtCore.QUrl(location)
+        if not target_url.isValid() or target_url.isEmpty():
+            return QtCore.QUrl()
+        return reply.url().resolved(target_url)
+    except Exception:
+        return QtCore.QUrl()
+
+
+def _is_trusted_update_url(url):
+    candidate = url if isinstance(url, QtCore.QUrl) else QtCore.QUrl(str(url))
+    if not candidate.isValid() or candidate.scheme().casefold() != "https":
+        return False
+    host = candidate.host().casefold()
+    return (
+        host in {"github.com", "api.github.com"}
+        or host.endswith(".githubusercontent.com")
+    )
+
+
+def _network_no_error():
+    value = getattr(QtNetwork.QNetworkReply, "NoError", None)
+    if value is not None:
+        return value
+    enum_type = getattr(QtNetwork.QNetworkReply, "NetworkError", None)
+    return getattr(enum_type, "NoError", 0) if enum_type is not None else 0
+
+
+def _safe_extract_update(archive_path, destination):
+    destination_root = os.path.realpath(destination)
+    with zipfile.ZipFile(archive_path, "r") as archive:
+        members = archive.infolist()
+        if len(members) > 500:
+            raise ValueError("update_too_large")
+        total_size = sum(max(0, int(member.file_size)) for member in members)
+        if total_size > 100 * 1024 * 1024:
+            raise ValueError("update_too_large")
+        for member in members:
+            name = str(member.filename or "").replace("\\", "/")
+            if not name:
+                continue
+            if name.startswith("/") or re.match(r"^[A-Za-z]:", name):
+                raise ValueError("unsafe_update_path")
+            target = os.path.realpath(os.path.join(destination_root, name))
+            try:
+                inside_destination = os.path.commonpath(
+                    [destination_root, target]) == destination_root
+            except ValueError:
+                inside_destination = False
+            if not inside_destination:
+                raise ValueError("unsafe_update_path")
+            file_type = (int(member.external_attr) >> 16) & 0o170000
+            if file_type == 0o120000:
+                raise ValueError("unsafe_update_link")
+        archive.extractall(destination_root)
+
+
+def _find_update_package_root(extract_directory):
+    candidates = [
+        os.path.join(extract_directory, "radial_layer_tools"),
+        extract_directory
+    ]
+    for root, directories, filenames in os.walk(extract_directory):
+        del directories
+        if "__init__.py" in filenames:
+            candidates.append(root)
+    seen = set()
+    for candidate in candidates:
+        candidate = os.path.realpath(candidate)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if os.path.isfile(os.path.join(candidate, "__init__.py")):
+            return candidate
+    return ""
+
+
+def _package_version(package_root):
+    source_path = os.path.join(package_root, "__init__.py")
+    with open(source_path, "r", encoding="utf-8") as handle:
+        source = handle.read(8192)
+    match = re.search(
+        r"^PLUGIN_VERSION\s*=\s*['\"]([^'\"]+)['\"]",
+        source, re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def _iter_install_files(root):
+    for directory, subdirectories, filenames in os.walk(root):
+        subdirectories[:] = [
+            name for name in subdirectories if name != "__pycache__"]
+        for filename in filenames:
+            if filename == CONFIG_FILE or filename.endswith((".pyc", ".pyo")):
+                continue
+            source_path = os.path.join(directory, filename)
+            relative_path = os.path.relpath(source_path, root)
+            yield source_path, relative_path
+
+
+def _copy_file_atomically(source_path, destination_path):
+    os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+    temporary_path = destination_path + ".update_tmp"
+    try:
+        shutil.copy2(source_path, temporary_path)
+        os.replace(temporary_path, destination_path)
+    finally:
+        if os.path.isfile(temporary_path):
+            try:
+                os.remove(temporary_path)
+            except OSError:
+                pass
+
+
+def _backup_current_plugin(destination):
+    for source_path, relative_path in _iter_install_files(_plugin_root()):
+        target_path = os.path.join(destination, relative_path)
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        shutil.copy2(source_path, target_path)
+
+
+def _restore_plugin_backup(backup_directory):
+    if not backup_directory or not os.path.isdir(backup_directory):
+        return
+    for source_path, relative_path in _iter_install_files(backup_directory):
+        _copy_file_atomically(
+            source_path, os.path.join(_plugin_root(), relative_path))
+
+
+class UpdateManager(QtCore.QObject):
+    stateChanged = QtCore.Signal()
+    progressChanged = QtCore.Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.state = "idle"
+        self.detail = ""
+        self.progress = -1
+        self.latest_version = ""
+        self.release_notes = ""
+        self._release = {}
+        self._reply = None
+        self._purpose = ""
+        self._redirect_count = 0
+        self._timed_out = False
+        self._shutting_down = False
+        self._restart_prompt_open = False
+        self._network = QtNetwork.QNetworkAccessManager(self)
+        self._timeout_timer = QtCore.QTimer(self)
+        self._timeout_timer.setSingleShot(True)
+        self._timeout_timer.timeout.connect(self._timeout_active_request)
+        self._automatic_timer = QtCore.QTimer(self)
+        self._automatic_timer.setSingleShot(True)
+        self._automatic_timer.timeout.connect(self.check_automatic)
+        self._cached_state = _load_update_state()
+        self._apply_cached_state()
+
+    def schedule_automatic_check(self, delay_ms=2500):
+        if self._shutting_down or self._automatic_timer.isActive():
+            return
+        self._automatic_timer.start(max(0, int(delay_ms)))
+
+    def _set_state(self, state, detail="", progress=None):
+        self.state = str(state)
+        self.detail = str(detail or "")
+        if progress is not None:
+            self.progress = int(progress)
+            self.progressChanged.emit(self.progress)
+        self.stateChanged.emit()
+
+    def _apply_cached_state(self):
+        installed_version = str(
+            self._cached_state.get("installed_version", "") or "")
+        pending_restart = bool(self._cached_state.get("pending_restart", False))
+        if pending_restart and _version_tuple(installed_version) > _version_tuple(
+                PLUGIN_VERSION):
+            self.latest_version = installed_version
+            self._set_state("restart")
+            return
+        if pending_restart and installed_version == PLUGIN_VERSION:
+            self._cached_state["pending_restart"] = False
+            self._cached_state["result"] = "latest"
+            try:
+                _save_update_state(self._cached_state)
+            except Exception:
+                _error("Failed to finalize update state:\n" + traceback.format_exc())
+
+        self.latest_version = str(
+            self._cached_state.get("latest_version", "") or "")
+        self.release_notes = str(
+            self._cached_state.get("release_notes", "") or "")
+        self._release = {
+            "version": self.latest_version,
+            "asset_name": str(
+                self._cached_state.get("asset_name", "") or ""),
+            "asset_url": str(
+                self._cached_state.get("asset_url", "") or ""),
+            "asset_digest": str(
+                self._cached_state.get("asset_digest", "") or "")
+        }
+        result = str(self._cached_state.get("result", "") or "")
+        if result == "no_releases":
+            self._set_state("no_releases")
+        elif self.latest_version:
+            self._apply_release_state()
+
+    def _apply_release_state(self):
+        remote = _version_tuple(self.latest_version)
+        current = _version_tuple(PLUGIN_VERSION)
+        if not remote:
+            self._set_state("error", "invalid_version")
+        elif remote > current:
+            if not self._release.get("asset_url"):
+                self._set_state("error", "release_missing_zip")
+            elif not str(self._release.get("asset_digest", "")).startswith(
+                    "sha256:"):
+                self._set_state("error", "checksum_missing")
+            else:
+                self._set_state("available")
+        else:
+            self._set_state("latest")
+
+    def check_automatic(self):
+        try:
+            config = _load_config()
+            if not bool(config.get("auto_check_updates", True)):
+                return
+            self.check_for_updates(force=False)
+        except Exception:
+            _error("Automatic update check failed:\n" + traceback.format_exc())
+
+    def check_for_updates(self, force=True):
+        if self._reply is not None or self.state in ("downloading", "installing"):
+            return
+        if self.state == "restart":
+            self.stateChanged.emit()
+            return
+        last_checked = float(self._cached_state.get("last_checked", 0.0) or 0.0)
+        if (
+                not force
+                and last_checked > 0
+                and time.time() - last_checked < UPDATE_CHECK_INTERVAL_SECONDS):
+            self._apply_cached_state()
+            return
+        self.latest_version = ""
+        self._release = {}
+        self._set_state("checking", progress=-1)
+        self._start_request(GITHUB_LATEST_RELEASE_API, "check")
+
+    def download_and_install(self):
+        if self.state != "available" or self._reply is not None:
+            return
+        url = str(self._release.get("asset_url", "") or "")
+        if not url:
+            self._set_state("error", "release_missing_zip")
+            return
+        self._set_state("downloading", progress=0)
+        self._start_request(url, "download")
+
+    def prompt_restart(self, parent=None):
+        if (
+                self._shutting_down
+                or self.state != "restart"
+                or self._restart_prompt_open):
+            return
+        config = _load_config()
+        parent = (
+            parent
+            or QtWidgets.QApplication.activeWindow()
+            or substance_painter.ui.get_main_window())
+        dialog = QtWidgets.QMessageBox(parent)
+        dialog.setWindowTitle(_tr("restart_prompt_title", config))
+        dialog.setIcon(QtWidgets.QMessageBox.Information)
+        dialog.setTextFormat(QtCore.Qt.PlainText)
+        dialog.setText(_tr("restart_prompt_message", config).format(
+            version=self.latest_version or PLUGIN_VERSION))
+        later_button = dialog.addButton(
+            _tr("restart_later", config),
+            QtWidgets.QMessageBox.RejectRole)
+        restart_button = dialog.addButton(
+            _tr("restart_now", config),
+            QtWidgets.QMessageBox.AcceptRole)
+        dialog.setDefaultButton(later_button)
+        dialog.setEscapeButton(later_button)
+        self._restart_prompt_open = True
+        try:
+            dialog.exec()
+        finally:
+            self._restart_prompt_open = False
+        if dialog.clickedButton() is restart_button:
+            QtCore.QTimer.singleShot(0, _request_painter_restart)
+
+    def _start_request(self, url, purpose, redirect_count=0):
+        request_url = QtCore.QUrl(str(url))
+        if not _is_trusted_update_url(request_url):
+            self._set_state("error", "unsafe_update_redirect")
+            return
+        request = QtNetwork.QNetworkRequest(request_url)
+        request.setRawHeader(
+            b"User-Agent", ("RadialLayerTools/" + PLUGIN_VERSION).encode("ascii"))
+        accept = (
+            b"application/octet-stream"
+            if str(purpose) == "download"
+            else b"application/vnd.github+json"
+        )
+        request.setRawHeader(b"Accept", accept)
+        request.setRawHeader(b"X-GitHub-Api-Version", b"2022-11-28")
+        redirect_attribute = _network_request_attribute("RedirectPolicyAttribute")
+        redirect_policy = _network_redirect_policy("NoLessSafeRedirectPolicy")
+        if redirect_attribute is not None and redirect_policy is not None:
+            request.setAttribute(redirect_attribute, redirect_policy)
+        self._purpose = str(purpose)
+        self._redirect_count = max(0, int(redirect_count))
+        self._timed_out = False
+        self._reply = self._network.get(request)
+        self._reply.finished.connect(self._request_finished)
+        if self._purpose == "download":
+            self._reply.downloadProgress.connect(self._download_progress)
+        self._timeout_timer.start(UPDATE_REQUEST_TIMEOUT_MS)
+
+    def _http_status(self, reply):
+        attribute = _network_request_attribute("HttpStatusCodeAttribute")
+        if attribute is None:
+            return 0
+        try:
+            value = reply.attribute(attribute)
+            return int(value) if value is not None else 0
+        except Exception:
+            return 0
+
+    def _request_finished(self):
+        reply = self._reply
+        if reply is None:
+            return
+        self._timeout_timer.stop()
+        purpose = self._purpose
+        redirect_count = self._redirect_count
+        redirect_url = _network_redirect_target(reply)
+        self._reply = None
+        self._purpose = ""
+        self._redirect_count = 0
+        status = self._http_status(reply)
+        data = bytes(reply.readAll())
+        error = reply.error()
+        error_text = reply.errorString()
+        reply.deleteLater()
+        if self._shutting_down:
+            return
+        if status in (301, 302, 303, 307, 308):
+            if not redirect_url.isValid() or redirect_url.isEmpty():
+                self._set_state("error", "unsafe_update_redirect")
+                return
+            if redirect_count >= 5:
+                self._set_state("error", "too_many_update_redirects")
+                return
+            if not _is_trusted_update_url(redirect_url):
+                self._set_state("error", "unsafe_update_redirect")
+                return
+            self._start_request(
+                redirect_url.toString(), purpose, redirect_count + 1)
+            return
+        if purpose == "check" and status == 404:
+            self._cache_no_releases()
+            return
+        if self._timed_out:
+            self._set_state("error", "timeout")
+            return
+        if error != _network_no_error() or status >= 400:
+            self._set_state("error", error_text or "network_error")
+            return
+        try:
+            if purpose == "check":
+                self._handle_release_response(data)
+            elif purpose == "download":
+                self._handle_download_response(data)
+        except Exception:
+            _error("Update request failed:\n" + traceback.format_exc())
+            self._set_state("error", "invalid_update")
+
+    def _handle_release_response(self, data):
+        payload = json.loads(data.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("invalid_release")
+        version = str(payload.get("tag_name", "") or "").lstrip("vV")
+        if not _version_tuple(version):
+            raise ValueError("invalid_version")
+        assets = payload.get("assets", [])
+        assets = assets if isinstance(assets, list) else []
+        zip_assets = [
+            asset for asset in assets
+            if isinstance(asset, dict)
+            and str(asset.get("name", "")).lower().endswith(".zip")]
+        preferred = [
+            asset for asset in zip_assets
+            if "radiallayertools" in re.sub(
+                r"[^a-z0-9]", "", str(asset.get("name", "")).lower())]
+        asset = (preferred or zip_assets or [{}])[0]
+        self.latest_version = version
+        self.release_notes = str(payload.get("body", "") or "")[:8000]
+        self._release = {
+            "version": version,
+            "asset_name": str(asset.get("name", "") or ""),
+            "asset_url": str(asset.get("browser_download_url", "") or ""),
+            "asset_digest": str(asset.get("digest", "") or "").lower()
+        }
+        self._cached_state.update({
+            "last_checked": time.time(),
+            "result": "release",
+            "latest_version": self.latest_version,
+            "release_notes": self.release_notes,
+            "asset_name": self._release["asset_name"],
+            "asset_url": self._release["asset_url"],
+            "asset_digest": self._release["asset_digest"]
+        })
+        _save_update_state(self._cached_state)
+        self._apply_release_state()
+
+    def _cache_no_releases(self):
+        self.latest_version = ""
+        self.release_notes = ""
+        self._release = {}
+        self._cached_state.update({
+            "last_checked": time.time(),
+            "result": "no_releases",
+            "latest_version": "",
+            "release_notes": "",
+            "asset_name": "",
+            "asset_url": "",
+            "asset_digest": ""
+        })
+        try:
+            _save_update_state(self._cached_state)
+        except Exception:
+            _error("Failed to cache update result:\n" + traceback.format_exc())
+        self._set_state("no_releases", progress=-1)
+
+    def _download_progress(self, received, total):
+        if total <= 0:
+            return
+        progress = max(0, min(100, int(received * 100 / total)))
+        if progress != self.progress:
+            self.progress = progress
+            self.progressChanged.emit(progress)
+
+    def _handle_download_response(self, data):
+        expected_digest = str(
+            self._release.get("asset_digest", "") or "").lower()
+        actual_digest = "sha256:" + hashlib.sha256(data).hexdigest().lower()
+        if expected_digest != actual_digest:
+            _error(
+                "Update checksum mismatch: expected %s, received %s (%d bytes)"
+                % (expected_digest, actual_digest, len(data)))
+            self._set_state("error", "checksum_mismatch")
+            return
+        self._set_state("installing", progress=100)
+        QtCore.QTimer.singleShot(
+            0, lambda payload=data: self._install_download(payload))
+
+    def _install_download(self, data):
+        backup_directory = ""
+        backup_ready = False
+        extract_directory = ""
+        installed_paths = []
+        existing_paths = set()
+        try:
+            cache_directory = _update_cache_directory()
+            downloads_directory = os.path.join(cache_directory, "downloads")
+            os.makedirs(downloads_directory, exist_ok=True)
+            asset_name = os.path.basename(str(
+                self._release.get("asset_name", "") or "update.zip"))
+            archive_path = os.path.join(downloads_directory, asset_name)
+            temporary_archive = archive_path + ".tmp"
+            with open(temporary_archive, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_archive, archive_path)
+
+            extract_directory = os.path.join(
+                cache_directory, "extract-%d" % int(time.time() * 1000))
+            os.makedirs(extract_directory, exist_ok=False)
+            _safe_extract_update(archive_path, extract_directory)
+            package_root = _find_update_package_root(extract_directory)
+            if not package_root:
+                raise ValueError("invalid_update")
+            package_version = _package_version(package_root)
+            if _version_tuple(package_version) != _version_tuple(
+                    self.latest_version):
+                raise ValueError("version_mismatch")
+
+            backup_directory = os.path.join(
+                cache_directory,
+                "backups",
+                "V%s-%s" % (
+                    PLUGIN_VERSION, time.strftime("%Y%m%d-%H%M%S")))
+            os.makedirs(backup_directory, exist_ok=False)
+            _backup_current_plugin(backup_directory)
+            backup_ready = True
+            existing_paths = {
+                os.path.normcase(os.path.normpath(relative_path))
+                for unused_source, relative_path in _iter_install_files(
+                    _plugin_root())
+            }
+            for source_path, relative_path in _iter_install_files(package_root):
+                destination_path = os.path.join(_plugin_root(), relative_path)
+                _copy_file_atomically(source_path, destination_path)
+                installed_paths.append((destination_path, relative_path))
+
+            self._cached_state.update({
+                "pending_restart": True,
+                "installed_version": self.latest_version,
+                "backup_directory": backup_directory,
+                "installed_at": time.time()
+            })
+            _save_update_state(self._cached_state)
+            self._set_state("restart", progress=100)
+            _log("Installed update V%s; restart Painter to load it." %
+                 self.latest_version)
+            QtCore.QTimer.singleShot(0, self.prompt_restart)
+        except Exception as exception:
+            if backup_ready:
+                try:
+                    for destination_path, relative_path in installed_paths:
+                        normalized = os.path.normcase(os.path.normpath(
+                            relative_path))
+                        if normalized not in existing_paths:
+                            try:
+                                os.remove(destination_path)
+                            except OSError:
+                                pass
+                    _restore_plugin_backup(backup_directory)
+                except Exception:
+                    _error("Update rollback failed:\n" + traceback.format_exc())
+            _error("Update installation failed:\n" + traceback.format_exc())
+            detail = str(exception or "invalid_update")
+            self._set_state("error", detail)
+        finally:
+            if extract_directory and os.path.isdir(extract_directory):
+                try:
+                    shutil.rmtree(extract_directory)
+                except Exception:
+                    _error("Failed to clean update staging directory:\n" +
+                           traceback.format_exc())
+
+    def _timeout_active_request(self):
+        if self._reply is None:
+            return
+        self._timed_out = True
+        self._reply.abort()
+
+    def shutdown(self):
+        self._shutting_down = True
+        self._automatic_timer.stop()
+        self._timeout_timer.stop()
+        reply = self._reply
+        self._reply = None
+        if reply is not None:
+            try:
+                reply.finished.disconnect(self._request_finished)
+            except (RuntimeError, TypeError):
+                pass
+            if self._purpose == "download":
+                try:
+                    reply.downloadProgress.disconnect(self._download_progress)
+                except (RuntimeError, TypeError):
+                    pass
+            try:
+                reply.abort()
+                reply.deleteLater()
+            except RuntimeError:
+                pass
+        self._purpose = ""
 
 
 def _language_code(value):
@@ -1473,6 +2449,24 @@ def _add_paint_layer(select_created=True):
     return node
 
 
+def _add_generator_effect():
+    node = sp.layerstack.insert_generator_effect(_effect_insert_position())
+    _select_node(node)
+    return node
+
+
+def _add_paint_effect():
+    node = sp.layerstack.insert_paint(_effect_insert_position())
+    _select_node(node)
+    return node
+
+
+def _add_fill_effect():
+    node = sp.layerstack.insert_fill(_effect_insert_position())
+    _select_node(node)
+    return node
+
+
 def _action_unavailable(action):
     if action != "add_black_mask":
         return False
@@ -1496,6 +2490,42 @@ def _add_black_mask():
     except Exception:
         pass
     return layer
+
+
+def _add_compare_mask():
+    node = sp.layerstack.insert_compare_mask_effect(_mask_insert_position())
+    _select_node(node)
+    return node
+
+
+def _add_filter_effect():
+    node = sp.layerstack.insert_filter_effect(_effect_insert_position())
+    _select_node(node)
+    return node
+
+
+def _next_anchor_point_name():
+    base_name = _tr("anchor_point_name")
+    existing_names = set()
+    try:
+        for node, _selection_type in _all_selection_slots():
+            if hasattr(node, "get_name"):
+                existing_names.add(str(node.get_name()))
+    except Exception:
+        pass
+    if base_name not in existing_names:
+        return base_name
+    index = 2
+    while "%s %d" % (base_name, index) in existing_names:
+        index += 1
+    return "%s %d" % (base_name, index)
+
+
+def _add_anchor_point():
+    node = sp.layerstack.insert_anchor_point_effect(
+        _effect_insert_position(), _next_anchor_point_name())
+    _select_node(node)
+    return node
 
 
 def _find_filter_resource(names):
@@ -1670,8 +2700,20 @@ def _run_action(action):
             _add_fill_layer()
         elif action == "add_paint_layer":
             _add_paint_layer()
+        elif action == "add_generator_effect":
+            _add_generator_effect()
+        elif action == "add_paint_effect":
+            _add_paint_effect()
+        elif action == "add_fill_effect":
+            _add_fill_effect()
         elif action == "add_black_mask":
             _add_black_mask()
+        elif action == "add_compare_mask":
+            _add_compare_mask()
+        elif action == "add_filter_effect":
+            _add_filter_effect()
+        elif action == "add_anchor_point":
+            _add_anchor_point()
         elif action == "add_blur_filter":
             _add_blur_filter()
         elif action == "add_levels":
@@ -2458,7 +3500,10 @@ class SettingsDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._loading = False
+        self._saved_config = copy.deepcopy(DEFAULT_CONFIG)
+        self._dirty = False
         self._highlight_color = QtGui.QColor("#2d8fe8")
+        self._update_manager = None
         self.shortcut_assignment_rows = {}
         self.working_config = copy.deepcopy(DEFAULT_CONFIG)
         self.setWindowTitle(_tr("settings_title"))
@@ -2472,6 +3517,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self._thumbnail_timer.setSingleShot(True)
         self._thumbnail_timer.timeout.connect(self._load_next_thumbnail)
         self.load_config(_load_config())
+        self._bind_update_manager()
 
     def _build_ui(self):
         root_layout = QtWidgets.QVBoxLayout(self)
@@ -2742,13 +3788,75 @@ class SettingsDialog(QtWidgets.QDialog):
         add_form_row("highlight_color", self.color_button)
         properties_layout.addLayout(self.form)
         properties_layout.addStretch(1)
+
+        self.repository_button = QtWidgets.QToolButton(self.properties_page)
+        self.repository_button.setObjectName("repositoryButton")
+        self.repository_button.setToolButtonStyle(
+            QtCore.Qt.ToolButtonTextBesideIcon)
+        self.repository_button.setIcon(QtGui.QIcon(_icon_pixmap("github")))
+        self.repository_button.setIconSize(QtCore.QSize(18, 18))
+        self.repository_button.setText("Linbainuo")
+        self.repository_button.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.repository_button.setFixedHeight(36)
+        self.repository_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.repository_button.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.repository_button.clicked.connect(self._open_repository)
+        properties_layout.addWidget(self.repository_button)
+
+        self.update_section = QtWidgets.QFrame(self.properties_page)
+        self.update_section.setObjectName("updateSection")
+        update_layout = QtWidgets.QVBoxLayout(self.update_section)
+        update_layout.setContentsMargins(0, 12, 0, 0)
+        update_layout.setSpacing(7)
+
+        update_header = QtWidgets.QHBoxLayout()
+        update_header.setContentsMargins(0, 0, 0, 0)
+        update_header.setSpacing(8)
+        self.update_title_label = QtWidgets.QLabel(
+            _tr("updates"), self.update_section)
+        self.update_title_label.setObjectName("updateTitleLabel")
+        update_header.addWidget(self.update_title_label)
+        update_header.addStretch(1)
         self.version_label = QtWidgets.QLabel(
-            "V" + PLUGIN_VERSION, self.properties_page)
+            "V" + PLUGIN_VERSION, self.update_section)
         self.version_label.setObjectName("versionLabel")
         self.version_label.setAlignment(
-            QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-        properties_layout.addWidget(
-            self.version_label, 0, QtCore.Qt.AlignLeft)
+            QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        update_header.addWidget(self.version_label)
+        update_layout.addLayout(update_header)
+
+        self.update_status_label = QtWidgets.QLabel(self.update_section)
+        self.update_status_label.setObjectName("updateStatusLabel")
+        self.update_status_label.setWordWrap(True)
+        self.update_status_label.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse)
+        update_layout.addWidget(self.update_status_label)
+
+        self.update_progress = QtWidgets.QProgressBar(self.update_section)
+        self.update_progress.setObjectName("updateProgress")
+        self.update_progress.setRange(0, 100)
+        self.update_progress.setValue(0)
+        self.update_progress.setTextVisible(False)
+        self.update_progress.setFixedHeight(3)
+        self.update_progress.hide()
+        update_layout.addWidget(self.update_progress)
+
+        update_actions = QtWidgets.QHBoxLayout()
+        update_actions.setContentsMargins(0, 0, 0, 0)
+        update_actions.setSpacing(8)
+        self.auto_update_checkbox = QtWidgets.QCheckBox(
+            _tr("auto_check_updates"), self.update_section)
+        self.auto_update_checkbox.toggled.connect(self._controls_changed)
+        update_actions.addWidget(self.auto_update_checkbox, 1)
+        self.update_button = QtWidgets.QPushButton(
+            _tr("check_updates"), self.update_section)
+        self.update_button.setObjectName("updateButton")
+        self.update_button.setMinimumWidth(108)
+        self.update_button.clicked.connect(self._update_button_clicked)
+        update_actions.addWidget(self.update_button)
+        update_layout.addLayout(update_actions)
+        properties_layout.addWidget(self.update_section)
         self.sidebar_stack.addWidget(self.properties_page)
         self.sidebar_stack.setCurrentWidget(self.command_page)
         self._set_command_mode(0)
@@ -2854,6 +3962,48 @@ class SettingsDialog(QtWidgets.QDialog):
             QLabel#versionLabel {
                 color: #777a7d; font-size: 11px; font-weight: 400;
                 padding: 0 0 2px 0;
+            }
+            QFrame#updateSection {
+                background: transparent; border-top: 1px solid #424242;
+            }
+            QToolButton#repositoryButton {
+                background: transparent; color: #cfd1d3;
+                border: none; padding: 0; text-align: left;
+            }
+            QToolButton#repositoryButton:hover {
+                background: transparent; color: #f0f0f0;
+            }
+            QToolButton#repositoryButton:pressed {
+                background: transparent; color: #aeb1b4;
+            }
+            QLabel#updateTitleLabel {
+                color: #d9d9d9; font-size: 12px; font-weight: 600;
+            }
+            QLabel#updateStatusLabel {
+                color: #96999c; font-size: 11px;
+            }
+            QLabel#versionLabel[updateState="available"],
+            QLabel#updateStatusLabel[updateState="available"] {
+                color: #63c879; font-weight: 600;
+            }
+            QPushButton#updateButton {
+                min-height: 30px; padding: 0 10px;
+            }
+            QPushButton#updateButton[updateState="available"] {
+                background: #347d49; color: #f4fff6;
+                border: 1px solid #51a867;
+            }
+            QPushButton#updateButton[updateState="available"]:hover {
+                background: #3d9255; border-color: #67c87c;
+            }
+            QPushButton#updateButton[updateState="available"]:pressed {
+                background: #2b6b3e; border-color: #438e57;
+            }
+            QProgressBar#updateProgress {
+                background: #202020; border: none; border-radius: 1px;
+            }
+            QProgressBar#updateProgress::chunk {
+                background: #2d8fe8; border-radius: 1px;
             }
             QFrame#settingsSidebar { background: #2b2b2b; }
             QFrame#settingsEditor { background: #303030; }
@@ -2967,6 +4117,15 @@ class SettingsDialog(QtWidgets.QDialog):
                 background: #2d8fe8; color: white; border-color: #3b9af0; font-weight: 600;
             }
             QPushButton#primaryButton:hover { background: #3599ef; }
+            QPushButton#primaryButton[dirty="true"] {
+                background: #b54747; color: white; border-color: #d05a5a;
+            }
+            QPushButton#primaryButton[dirty="true"]:hover {
+                background: #c14f4f; border-color: #df6969;
+            }
+            QPushButton#primaryButton[dirty="true"]:pressed {
+                background: #963b3b; border-color: #b94d4d;
+            }
             QToolButton#propertiesButton {
                 min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px;
                 background: #303030; color: #e5e5e5; border: 1px solid #4a4a4a;
@@ -2994,7 +4153,7 @@ class SettingsDialog(QtWidgets.QDialog):
             QToolButton#backButton { background: transparent; border: none; padding: 0; }
         """)
 
-    def load_config(self, config):
+    def load_config(self, config, mark_saved=True):
         self._loading = True
         self.working_config = copy.deepcopy(config)
         removed_filter_ids = _merge_filter_catalog(
@@ -3019,6 +4178,8 @@ class SettingsDialog(QtWidgets.QDialog):
         language_index = self.language_combo.findData(language)
         self.language_combo.setCurrentIndex(max(0, language_index))
         self.shortcut_edit.setKeySequence(_shortcut_sequence(self.working_config))
+        self.auto_update_checkbox.setChecked(bool(
+            self.working_config.get("auto_check_updates", True)))
         self.wheel_radius_spin.setValue(int(self.working_config.get("wheel_radius", 154)))
         self.inner_radius_spin.setMaximum(max(45, self.wheel_radius_spin.value() - 28))
         self.inner_radius_spin.setValue(int(self.working_config.get("inner_radius", 76)))
@@ -3028,6 +4189,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self._loading = False
         self._retranslate_ui()
         self.preview.set_config(self.working_config)
+        if mark_saved:
+            self._saved_config = copy.deepcopy(self.working_config)
+        self._update_status()
 
     def _populate_command_list(self, selected_id=""):
         self.command_list.clear()
@@ -3040,11 +4204,22 @@ class SettingsDialog(QtWidgets.QDialog):
                 item for item in items if _command_category(item) == category]
             if not category_items:
                 continue
-            active = [item for item in category_items if item.get("enabled", True)]
-            inactive = sorted(
-                (item for item in category_items if not item.get("enabled", True)),
-                key=lambda item: _localized_value(
-                    item, "labels", self.working_config).casefold())
+            if category == "effects":
+                display_items = sorted(
+                    category_items,
+                    key=lambda item: (
+                        EFFECT_COMMAND_RANK.get(
+                            str(item.get("id", "")), len(EFFECT_COMMAND_ORDER)),
+                        _localized_value(
+                            item, "labels", self.working_config).casefold()))
+            else:
+                active = [
+                    item for item in category_items if item.get("enabled", True)]
+                inactive = sorted(
+                    (item for item in category_items if not item.get("enabled", True)),
+                    key=lambda item: _localized_value(
+                        item, "labels", self.working_config).casefold())
+                display_items = active + inactive
 
             header = QtWidgets.QListWidgetItem(
                 _tr(COMMAND_CATEGORY_KEYS[category], self.working_config))
@@ -3053,7 +4228,7 @@ class SettingsDialog(QtWidgets.QDialog):
             header.setFlags(QtCore.Qt.ItemIsEnabled)
             self.command_list.addItem(header)
 
-            for item in active + inactive:
+            for item in display_items:
                 list_item = QtWidgets.QListWidgetItem(
                     _localized_value(item, "labels", self.working_config))
                 item_id = str(item.get("id", ""))
@@ -3212,6 +4387,7 @@ class SettingsDialog(QtWidgets.QDialog):
         command_id = str(list_item.data(ROLE_ITEM_ID) or "")
         self._add_shortcut_assignment(command_id, capture=True)
         self._sync_command_shortcuts()
+        self._update_status()
 
     def _remove_shortcut_assignment(self, command_id):
         entry = self.shortcut_assignment_rows.pop(str(command_id or ""), None)
@@ -3222,10 +4398,12 @@ class SettingsDialog(QtWidgets.QDialog):
         widget.deleteLater()
         self._sync_command_shortcuts()
         self._update_shortcut_assignment_visibility()
+        self._update_status()
 
     def _command_shortcut_changed(self, command_id, sequence):
         del command_id, sequence
         self._sync_command_shortcuts()
+        self._update_status()
 
     def _sync_command_shortcuts(self):
         if self._loading:
@@ -3279,6 +4457,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.preview.set_config(self.working_config)
         self.preview.set_selected_id(item_id)
         self._rebuild_menu_cards()
+        self._update_status()
 
     def _filter_items(self, text):
         query = str(text).strip().casefold()
@@ -3408,6 +4587,7 @@ class SettingsDialog(QtWidgets.QDialog):
         })
         self.working_config["active_menu_id"] = menu_id
         self._rebuild_menu_cards()
+        self._update_status()
 
     def _rename_menu_preset(self, menu_id):
         menu = next((
@@ -3426,6 +4606,7 @@ class SettingsDialog(QtWidgets.QDialog):
         if accepted and name:
             menu["name"] = name
             self._rebuild_menu_cards()
+            self._update_status()
 
     def _delete_menu_preset(self, menu_id):
         menu_id = str(menu_id or "")
@@ -3500,9 +4681,21 @@ class SettingsDialog(QtWidgets.QDialog):
         item = self._items_by_id().get(item_id)
         name = (
             _localized_value(item, "labels", self.working_config)
-            if item is not None else "")
+            if item is not None else _active_menu_name(self.working_config))
+        dirty = self.working_config != self._saved_config
+        self._dirty = dirty
         self.status_label.setText(
             _tr("selected_status", self.working_config).format(name=name))
+        if self.apply_button.property("dirty") != dirty:
+            self.apply_button.setProperty("dirty", dirty)
+            style = self.apply_button.style()
+            if style is not None:
+                style.unpolish(self.apply_button)
+                style.polish(self.apply_button)
+            self.apply_button.update()
+        if self.apply_button.isEnabled():
+            self.apply_button.setText(_tr(
+                "unsaved" if dirty else "apply", self.working_config))
 
     def _items_by_id(self):
         return {
@@ -3540,6 +4733,8 @@ class SettingsDialog(QtWidgets.QDialog):
             return
         self.working_config["language"] = str(self.language_combo.currentData() or "painter")
         self.working_config["shortcut"] = self._shortcut_config()
+        self.working_config["auto_check_updates"] = bool(
+            self.auto_update_checkbox.isChecked())
         self.working_config["wheel_radius"] = self.wheel_radius_spin.value()
         self.working_config["inner_radius"] = min(
             self.inner_radius_spin.value(), self.wheel_radius_spin.value() - 28)
@@ -3551,6 +4746,7 @@ class SettingsDialog(QtWidgets.QDialog):
         del args
         self._sync_controls()
         self.preview.set_config(self.working_config)
+        self._update_status()
 
     def _language_changed(self, *args):
         del args
@@ -3585,6 +4781,11 @@ class SettingsDialog(QtWidgets.QDialog):
         self.close_button.setText(_tr("close", config))
         self.color_button.setToolTip(_tr("highlight_color", config))
         self.hint_label.setText(_tr("editor_hint", config))
+        self.update_title_label.setText(_tr("updates", config))
+        self.auto_update_checkbox.setText(_tr("auto_check_updates", config))
+        repository_tooltip = _tr("open_repository", config) + "\n" + GITHUB_REPOSITORY_URL
+        self.repository_button.setToolTip(repository_tooltip)
+        self.repository_button.setAccessibleName(repository_tooltip)
 
         was_blocked = self.language_combo.blockSignals(True)
         self.language_combo.setItemText(0, _tr("language_painter", config))
@@ -3599,6 +4800,142 @@ class SettingsDialog(QtWidgets.QDialog):
         self._rebuild_menu_cards()
         self._rebuild_shortcut_assignments()
         self._update_status()
+        self._refresh_update_ui()
+
+    def _bind_update_manager(self):
+        manager = _ensure_update_manager()
+        if manager is self._update_manager:
+            self._refresh_update_ui()
+            return
+        if self._update_manager is not None:
+            try:
+                self._update_manager.stateChanged.disconnect(
+                    self._refresh_update_ui)
+                self._update_manager.progressChanged.disconnect(
+                    self._update_progress_changed)
+            except (RuntimeError, TypeError):
+                pass
+        self._update_manager = manager
+        if manager is not None:
+            manager.stateChanged.connect(self._refresh_update_ui)
+            manager.progressChanged.connect(self._update_progress_changed)
+        self._refresh_update_ui()
+
+    def _update_detail_text(self, detail):
+        detail = str(detail or "").strip()
+        if not detail:
+            return _tr("network_error", self.working_config)
+        translated = _tr(detail, self.working_config)
+        return translated if translated != detail else detail
+
+    def _refresh_update_ui(self):
+        if not hasattr(self, "update_button"):
+            return
+        manager = self._update_manager
+        state = manager.state if manager is not None else "idle"
+        version = (
+            manager.latest_version if manager is not None
+            else PLUGIN_VERSION)
+        progress = manager.progress if manager is not None else -1
+        config = self.working_config
+
+        status_text = ""
+        button_text = _tr("check_updates", config)
+        button_enabled = state in (
+            "idle", "latest", "no_releases", "available", "restart", "error")
+        show_progress = state in ("checking", "downloading", "installing")
+
+        if state == "checking":
+            status_text = _tr("checking_updates", config)
+            button_text = status_text
+        elif state == "no_releases":
+            status_text = _tr("no_releases", config)
+        elif state == "latest":
+            status_text = _tr("up_to_date", config).format(
+                version=PLUGIN_VERSION)
+        elif state == "available":
+            status_text = _tr("update_available", config).format(
+                version=version)
+            button_text = _tr("download_update", config)
+        elif state == "downloading":
+            status_text = _tr("downloading_update", config).format(
+                progress=max(0, progress))
+            button_text = _tr("downloading_update", config).format(
+                progress=max(0, progress))
+        elif state == "installing":
+            status_text = _tr("installing_update", config)
+            button_text = status_text
+        elif state == "restart":
+            status_text = _tr("restart_to_finish", config)
+            button_text = _tr("restart_painter", config)
+        elif state == "error":
+            status_text = _tr("update_failed", config).format(
+                detail=self._update_detail_text(manager.detail))
+
+        self.update_status_label.setText(status_text)
+        self.update_status_label.setVisible(bool(status_text))
+        self.update_button.setText(button_text)
+        self.update_button.setEnabled(button_enabled)
+        for widget in (
+                self.version_label,
+                self.update_status_label,
+                self.update_button):
+            if widget.property("updateState") == state:
+                continue
+            widget.setProperty("updateState", state)
+            style = widget.style()
+            if style is not None:
+                style.unpolish(widget)
+                style.polish(widget)
+            widget.update()
+        self.update_progress.setVisible(show_progress)
+        if show_progress:
+            if state == "downloading" and progress >= 0:
+                self.update_progress.setRange(0, 100)
+                self.update_progress.setValue(max(0, min(100, progress)))
+            else:
+                self.update_progress.setRange(0, 0)
+
+    def _update_progress_changed(self, value):
+        del value
+        self._refresh_update_ui()
+
+    def _update_button_clicked(self):
+        manager = self._update_manager
+        if manager is None:
+            self._bind_update_manager()
+            manager = self._update_manager
+        if manager is None:
+            return
+        if manager.state == "restart":
+            manager.prompt_restart(self)
+            return
+        if manager.state != "available":
+            manager.check_for_updates(force=True)
+            return
+
+        dialog = QtWidgets.QMessageBox(self)
+        dialog.setWindowTitle(
+            _tr("update_confirm_title", self.working_config))
+        dialog.setIcon(QtWidgets.QMessageBox.Information)
+        dialog.setTextFormat(QtCore.Qt.PlainText)
+        dialog.setText(_tr(
+            "update_confirm_message", self.working_config).format(
+                version=manager.latest_version))
+        install_button = dialog.addButton(
+            _tr("confirm_install", self.working_config),
+            QtWidgets.QMessageBox.AcceptRole)
+        cancel_button = dialog.addButton(
+            _tr("close", self.working_config),
+            QtWidgets.QMessageBox.RejectRole)
+        dialog.setDefaultButton(install_button)
+        dialog.setEscapeButton(cancel_button)
+        dialog.exec()
+        if dialog.clickedButton() is install_button:
+            manager.download_and_install()
+
+    def _open_repository(self):
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl(GITHUB_REPOSITORY_URL))
 
     def _wheel_radius_changed(self, value):
         self.inner_radius_spin.setMaximum(max(45, int(value) - 28))
@@ -3645,7 +4982,7 @@ class SettingsDialog(QtWidgets.QDialog):
         dialog.exec()
         if dialog.clickedButton() is not restore_button:
             return
-        self.load_config(copy.deepcopy(DEFAULT_CONFIG))
+        self.load_config(copy.deepcopy(DEFAULT_CONFIG), mark_saved=False)
 
     def _apply(self):
         self._sync_item_order()
@@ -3654,6 +4991,8 @@ class SettingsDialog(QtWidgets.QDialog):
         try:
             _save_config(self.working_config)
             _reload_config_action()
+            self._saved_config = copy.deepcopy(self.working_config)
+            self._update_status()
             self.apply_button.show_success(
                 _tr("applied", self.working_config),
                 _tr("apply", self.working_config))
@@ -3680,10 +5019,20 @@ class SettingsDialog(QtWidgets.QDialog):
                 min(self.height(), maximum_height))
         self._show_commands_page()
         super().showEvent(event)
+        self._bind_update_manager()
         if self._thumbnail_queue and not self._thumbnail_timer.isActive():
             self._thumbnail_timer.start(1)
 
     def shutdown(self):
+        if self._update_manager is not None:
+            try:
+                self._update_manager.stateChanged.disconnect(
+                    self._refresh_update_ui)
+                self._update_manager.progressChanged.disconnect(
+                    self._update_progress_changed)
+            except (RuntimeError, TypeError):
+                pass
+            self._update_manager = None
         if self.shortcut_edit._capturing:
             self.shortcut_edit._cancel_capture()
         self._thumbnail_timer.stop()
@@ -4408,6 +5757,14 @@ def _settings_visible():
     return _SETTINGS_DIALOG is not None and _SETTINGS_DIALOG.isVisible()
 
 
+def _ensure_update_manager():
+    global _UPDATE_MANAGER
+    if _UPDATE_MANAGER is None:
+        parent = substance_painter.ui.get_main_window()
+        _UPDATE_MANAGER = UpdateManager(parent)
+    return _UPDATE_MANAGER
+
+
 def _show_settings():
     global _SETTINGS_DIALOG
     if _KEY_FILTER is not None:
@@ -4424,11 +5781,12 @@ def _show_settings():
 
 def start_plugin():
     global _KEY_FILTER, _NATIVE_WHEEL_FILTER, _POPUP, _RUNTIME_CONFIG
-    global _SETTINGS_ACTION, _TOOLBAR_BUTTON
+    global _SETTINGS_ACTION, _TOOLBAR_BUTTON, _UPDATE_MANAGER
     main_window = substance_painter.ui.get_main_window()
     config = _load_config()
     _RUNTIME_CONFIG = copy.deepcopy(config)
     app = QtWidgets.QApplication.instance()
+    _ensure_packaged_builtin_icons()
 
     if _KEY_FILTER is None:
         _KEY_FILTER = HoldKeyFilter(config, main_window)
@@ -4462,6 +5820,11 @@ def start_plugin():
         _TOOLBAR_BUTTON.clicked.connect(_show_settings)
         substance_painter.ui.add_plugins_toolbar_widget(_TOOLBAR_BUTTON)
 
+    update_manager_created = _UPDATE_MANAGER is None
+    update_manager = _ensure_update_manager()
+    if update_manager_created:
+        update_manager.schedule_automatic_check()
+
     _log("Started hold-key popup build " + PLUGIN_BUILD)
 
 
@@ -4471,6 +5834,7 @@ def close_plugin():
     global _RESOURCE_IMAGE_PROVIDER, _RESOURCE_PRELOAD_RETRIES
     global _RESOURCE_PROVIDER_RETRY_AFTER, _RESOURCE_METADATA_INDEX
     global _RESOURCE_SIDECAR_INDEX, _FILTER_COMMAND_CACHE, _FILTER_SCAN_COMPLETE
+    global _UPDATE_MANAGER
     app = QtWidgets.QApplication.instance()
     if app is not None and _KEY_FILTER is not None:
         _KEY_FILTER.release_hold(run_hovered=False)
@@ -4500,6 +5864,11 @@ def close_plugin():
         _SETTINGS_DIALOG.setParent(None)
         _SETTINGS_DIALOG.deleteLater()
         _SETTINGS_DIALOG = None
+    if _UPDATE_MANAGER is not None:
+        _UPDATE_MANAGER.shutdown()
+        _UPDATE_MANAGER.setParent(None)
+        _UPDATE_MANAGER.deleteLater()
+        _UPDATE_MANAGER = None
     if _SETTINGS_ACTION is not None:
         try:
             _SETTINGS_ACTION.triggered.disconnect(_show_settings)
