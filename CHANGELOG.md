@@ -6,10 +6,13 @@ All notable changes to Radial Layer Tools are documented here.
 
 ## 1.0.2 - 2026-07-23
 
-- Added paint effect and fill effect commands for the active content or mask stack.
-- Added compare mask and anchor point commands.
-- Added an empty filter command that opens Painter's filter selection workflow.
-- Added bilingual labels, descriptions, categories, and Painter-native icons for the new commands.
+- Added Generator, Paint, Fill, Levels, Compare Mask, Filter, Color Selection,
+  and Anchor Point commands to the Effects category.
+- Matched the Effects command order to Painter's native effect menu.
+- Added Painter's native Generator icon to the packaged plugin assets.
+- Migrated built-in command metadata without replacing menu placement, enabled
+  state, shortcuts, or local user configuration.
+- Added a red Unsaved state to the Apply button whenever editor settings change.
 
 ## 1.0.1 - 2026-07-22
 

@@ -211,6 +211,17 @@ DEFAULT_CONFIG = {
             "icon": "style:views/icons/effects_paint.svg"
         },
         {
+            "id": "generator_effect",
+            "labels": {"en": "Add Generator", "zh_CN": "添加生成器"},
+            "descriptions": {
+                "en": "Insert an empty generator effect",
+                "zh_CN": "添加一个空生成器效果"
+            },
+            "action": "add_generator_effect",
+            "category": "effects",
+            "icon": "style:views/icons/effects_generator.svg"
+        },
+        {
             "id": "paint_effect",
             "labels": {"en": "Add Paint", "zh_CN": "添加绘图"},
             "descriptions": {
@@ -248,7 +259,7 @@ DEFAULT_CONFIG = {
                 "zh_CN": "在当前图层遮罩中添加对比遮罩"
             },
             "action": "add_compare_mask",
-            "category": "masks",
+            "category": "effects",
             "icon": "style:views/icons/effects_comparemask.svg"
         },
         {
@@ -259,7 +270,7 @@ DEFAULT_CONFIG = {
                 "zh_CN": "添加一个空滤镜效果"
             },
             "action": "add_filter_effect",
-            "category": "filters",
+            "category": "effects",
             "icon": "style:views/icons/effects_substance.svg"
         },
         {
@@ -283,18 +294,18 @@ DEFAULT_CONFIG = {
         },
         {
             "id": "levels",
-            "labels": {"en": "Levels", "zh_CN": "色阶"},
+            "labels": {"en": "Add Levels", "zh_CN": "添加色阶"},
             "descriptions": {"en": "Adjust active channel", "zh_CN": "调整当前通道"},
             "action": "add_levels",
-            "category": "adjustments",
+            "category": "effects",
             "icon": "style:views/icons/effects_levels.svg"
         },
         {
             "id": "color_selection",
-            "labels": {"en": "Color Selection", "zh_CN": "颜色选择"},
+            "labels": {"en": "Add Color Selection", "zh_CN": "添加颜色选择"},
             "descriptions": {"en": "Add in mask stack", "zh_CN": "添加到遮罩下"},
             "action": "add_color_selection",
-            "category": "masks",
+            "category": "effects",
             "icon": "style:views/icons/effects_colorselection.svg"
         }
     ]
@@ -304,6 +315,7 @@ DEFAULT_CONFIG = {
 OFFICIAL_ICONS = {
     "fill_layer": "style:views/icons/effects_fill.svg",
     "paint_layer": "style:views/icons/effects_paint.svg",
+    "generator_effect": "style:views/icons/effects_generator.svg",
     "paint_effect": "style:views/icons/effects_paint.svg",
     "fill_effect": "style:views/icons/effects_fill.svg",
     "black_mask": "style:views/icons/thumbnail_add_mask.svg",
@@ -319,6 +331,7 @@ OFFICIAL_ICONS = {
 ICON_FILES = {
     "fill_layer": "fill_layer.png",
     "paint_layer": "paint_layer.png",
+    "generator_effect": "generator.png",
     "paint_effect": "paint_layer.png",
     "fill_effect": "fill_layer.png",
     "black_mask": "black_mask.png",
@@ -428,15 +441,29 @@ COMMAND_CATEGORY_KEYS = {
 COMMAND_CATEGORY_BY_ID = {
     "fill_layer": "layers",
     "paint_layer": "layers",
+    "generator_effect": "effects",
     "paint_effect": "effects",
     "fill_effect": "effects",
     "black_mask": "masks",
-    "compare_mask": "masks",
-    "color_selection": "masks",
+    "compare_mask": "effects",
+    "color_selection": "effects",
     "anchor_point": "effects",
-    "levels": "adjustments",
-    "filter_effect": "filters",
+    "levels": "effects",
+    "filter_effect": "effects",
     "blur": "filters"
+}
+EFFECT_COMMAND_ORDER = (
+    "generator_effect",
+    "paint_effect",
+    "fill_effect",
+    "levels",
+    "compare_mask",
+    "filter_effect",
+    "color_selection",
+    "anchor_point"
+)
+EFFECT_COMMAND_RANK = {
+    item_id: index for index, item_id in enumerate(EFFECT_COMMAND_ORDER)
 }
 ROLE_ITEM_ID = QtCore.Qt.UserRole
 ROLE_ITEM_ENABLED = QtCore.Qt.UserRole + 1
@@ -449,6 +476,7 @@ ROW_CATEGORY = "category"
 FALLBACK_GLYPHS = {
     "fill_layer": "+",
     "paint_layer": "P",
+    "generator_effect": "G",
     "paint_effect": "P",
     "fill_effect": "F",
     "black_mask": "M",
@@ -513,6 +541,7 @@ TRANSLATIONS = {
         "close": "Cancel",
         "highlight_color": "Highlight",
         "selected_status": "Selected: {name}",
+        "unsaved": "Unsaved",
         "editor_hint": "Drag a wheel segment to reorder it. Drag outside the wheel to remove it.",
         "move_to_position": "Move to position {position}",
         "release_to_remove": "Release to remove",
@@ -625,13 +654,14 @@ TRANSLATIONS = {
         "close": "取消",
         "highlight_color": "高亮颜色",
         "selected_status": "当前选中：{name}",
+        "unsaved": "未保存",
         "editor_hint": "拖动轮盘扇区可调整位置，拖出轮盘可移除命令。",
         "move_to_position": "移动到位置 {position}",
         "release_to_remove": "松开移除",
         "restore_command": "双击恢复到轮盘",
         "category_layers": "图层",
         "category_masks": "遮罩",
-        "category_effects": "效果",
+        "category_effects": "特效",
         "category_adjustments": "调整",
         "category_filters": "滤镜",
         "category_other": "其他",
@@ -943,12 +973,12 @@ def _radial_toolbar_icon():
 
 
 def _command_category(item):
-    category = str(item.get("category", "") or "")
-    if category in COMMAND_CATEGORY_ORDER:
-        return category
     item_id = str(item.get("id", "") or "")
     if item_id in COMMAND_CATEGORY_BY_ID:
         return COMMAND_CATEGORY_BY_ID[item_id]
+    category = str(item.get("category", "") or "")
+    if category in COMMAND_CATEGORY_ORDER:
+        return category
     action = str(item.get("action", "") or "")
     if action.startswith(FILTER_ACTION_PREFIX) or action == "add_blur_filter":
         return "filters"
@@ -1345,18 +1375,23 @@ def _merge_filter_catalog(config, force=False):
 
 def _merge_builtin_commands(config):
     items = list(config.get("items", []))
-    known_ids = {
-        str(item.get("id", "")) for item in items if item.get("id")}
-    known_actions = {
-        str(item.get("action", "")) for item in items if item.get("action")}
+    by_id = {
+        str(item.get("id", "")): item for item in items if item.get("id")}
+    by_action = {
+        str(item.get("action", "")): item for item in items if item.get("action")}
     for command in DEFAULT_CONFIG["items"]:
         command_id = str(command.get("id", ""))
         action = str(command.get("action", ""))
-        if command_id in known_ids or action in known_actions:
+        existing = by_id.get(command_id) or by_action.get(action)
+        if existing is not None:
+            for key in ("labels", "descriptions", "action", "category", "icon"):
+                if key in command:
+                    existing[key] = copy.deepcopy(command[key])
             continue
-        items.append(copy.deepcopy(command))
-        known_ids.add(command_id)
-        known_actions.add(action)
+        item = copy.deepcopy(command)
+        items.append(item)
+        by_id[command_id] = item
+        by_action[action] = item
     config["items"] = items
     return config
 
@@ -2414,6 +2449,12 @@ def _add_paint_layer(select_created=True):
     return node
 
 
+def _add_generator_effect():
+    node = sp.layerstack.insert_generator_effect(_effect_insert_position())
+    _select_node(node)
+    return node
+
+
 def _add_paint_effect():
     node = sp.layerstack.insert_paint(_effect_insert_position())
     _select_node(node)
@@ -2659,6 +2700,8 @@ def _run_action(action):
             _add_fill_layer()
         elif action == "add_paint_layer":
             _add_paint_layer()
+        elif action == "add_generator_effect":
+            _add_generator_effect()
         elif action == "add_paint_effect":
             _add_paint_effect()
         elif action == "add_fill_effect":
@@ -3457,6 +3500,8 @@ class SettingsDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._loading = False
+        self._saved_config = copy.deepcopy(DEFAULT_CONFIG)
+        self._dirty = False
         self._highlight_color = QtGui.QColor("#2d8fe8")
         self._update_manager = None
         self.shortcut_assignment_rows = {}
@@ -4072,6 +4117,15 @@ class SettingsDialog(QtWidgets.QDialog):
                 background: #2d8fe8; color: white; border-color: #3b9af0; font-weight: 600;
             }
             QPushButton#primaryButton:hover { background: #3599ef; }
+            QPushButton#primaryButton[dirty="true"] {
+                background: #b54747; color: white; border-color: #d05a5a;
+            }
+            QPushButton#primaryButton[dirty="true"]:hover {
+                background: #c14f4f; border-color: #df6969;
+            }
+            QPushButton#primaryButton[dirty="true"]:pressed {
+                background: #963b3b; border-color: #b94d4d;
+            }
             QToolButton#propertiesButton {
                 min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px;
                 background: #303030; color: #e5e5e5; border: 1px solid #4a4a4a;
@@ -4099,7 +4153,7 @@ class SettingsDialog(QtWidgets.QDialog):
             QToolButton#backButton { background: transparent; border: none; padding: 0; }
         """)
 
-    def load_config(self, config):
+    def load_config(self, config, mark_saved=True):
         self._loading = True
         self.working_config = copy.deepcopy(config)
         removed_filter_ids = _merge_filter_catalog(
@@ -4135,6 +4189,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self._loading = False
         self._retranslate_ui()
         self.preview.set_config(self.working_config)
+        if mark_saved:
+            self._saved_config = copy.deepcopy(self.working_config)
+        self._update_status()
 
     def _populate_command_list(self, selected_id=""):
         self.command_list.clear()
@@ -4147,11 +4204,22 @@ class SettingsDialog(QtWidgets.QDialog):
                 item for item in items if _command_category(item) == category]
             if not category_items:
                 continue
-            active = [item for item in category_items if item.get("enabled", True)]
-            inactive = sorted(
-                (item for item in category_items if not item.get("enabled", True)),
-                key=lambda item: _localized_value(
-                    item, "labels", self.working_config).casefold())
+            if category == "effects":
+                display_items = sorted(
+                    category_items,
+                    key=lambda item: (
+                        EFFECT_COMMAND_RANK.get(
+                            str(item.get("id", "")), len(EFFECT_COMMAND_ORDER)),
+                        _localized_value(
+                            item, "labels", self.working_config).casefold()))
+            else:
+                active = [
+                    item for item in category_items if item.get("enabled", True)]
+                inactive = sorted(
+                    (item for item in category_items if not item.get("enabled", True)),
+                    key=lambda item: _localized_value(
+                        item, "labels", self.working_config).casefold())
+                display_items = active + inactive
 
             header = QtWidgets.QListWidgetItem(
                 _tr(COMMAND_CATEGORY_KEYS[category], self.working_config))
@@ -4160,7 +4228,7 @@ class SettingsDialog(QtWidgets.QDialog):
             header.setFlags(QtCore.Qt.ItemIsEnabled)
             self.command_list.addItem(header)
 
-            for item in active + inactive:
+            for item in display_items:
                 list_item = QtWidgets.QListWidgetItem(
                     _localized_value(item, "labels", self.working_config))
                 item_id = str(item.get("id", ""))
@@ -4319,6 +4387,7 @@ class SettingsDialog(QtWidgets.QDialog):
         command_id = str(list_item.data(ROLE_ITEM_ID) or "")
         self._add_shortcut_assignment(command_id, capture=True)
         self._sync_command_shortcuts()
+        self._update_status()
 
     def _remove_shortcut_assignment(self, command_id):
         entry = self.shortcut_assignment_rows.pop(str(command_id or ""), None)
@@ -4329,10 +4398,12 @@ class SettingsDialog(QtWidgets.QDialog):
         widget.deleteLater()
         self._sync_command_shortcuts()
         self._update_shortcut_assignment_visibility()
+        self._update_status()
 
     def _command_shortcut_changed(self, command_id, sequence):
         del command_id, sequence
         self._sync_command_shortcuts()
+        self._update_status()
 
     def _sync_command_shortcuts(self):
         if self._loading:
@@ -4386,6 +4457,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.preview.set_config(self.working_config)
         self.preview.set_selected_id(item_id)
         self._rebuild_menu_cards()
+        self._update_status()
 
     def _filter_items(self, text):
         query = str(text).strip().casefold()
@@ -4515,6 +4587,7 @@ class SettingsDialog(QtWidgets.QDialog):
         })
         self.working_config["active_menu_id"] = menu_id
         self._rebuild_menu_cards()
+        self._update_status()
 
     def _rename_menu_preset(self, menu_id):
         menu = next((
@@ -4533,6 +4606,7 @@ class SettingsDialog(QtWidgets.QDialog):
         if accepted and name:
             menu["name"] = name
             self._rebuild_menu_cards()
+            self._update_status()
 
     def _delete_menu_preset(self, menu_id):
         menu_id = str(menu_id or "")
@@ -4607,9 +4681,21 @@ class SettingsDialog(QtWidgets.QDialog):
         item = self._items_by_id().get(item_id)
         name = (
             _localized_value(item, "labels", self.working_config)
-            if item is not None else "")
+            if item is not None else _active_menu_name(self.working_config))
+        dirty = self.working_config != self._saved_config
+        self._dirty = dirty
         self.status_label.setText(
             _tr("selected_status", self.working_config).format(name=name))
+        if self.apply_button.property("dirty") != dirty:
+            self.apply_button.setProperty("dirty", dirty)
+            style = self.apply_button.style()
+            if style is not None:
+                style.unpolish(self.apply_button)
+                style.polish(self.apply_button)
+            self.apply_button.update()
+        if self.apply_button.isEnabled():
+            self.apply_button.setText(_tr(
+                "unsaved" if dirty else "apply", self.working_config))
 
     def _items_by_id(self):
         return {
@@ -4660,6 +4746,7 @@ class SettingsDialog(QtWidgets.QDialog):
         del args
         self._sync_controls()
         self.preview.set_config(self.working_config)
+        self._update_status()
 
     def _language_changed(self, *args):
         del args
@@ -4895,7 +4982,7 @@ class SettingsDialog(QtWidgets.QDialog):
         dialog.exec()
         if dialog.clickedButton() is not restore_button:
             return
-        self.load_config(copy.deepcopy(DEFAULT_CONFIG))
+        self.load_config(copy.deepcopy(DEFAULT_CONFIG), mark_saved=False)
 
     def _apply(self):
         self._sync_item_order()
@@ -4904,6 +4991,8 @@ class SettingsDialog(QtWidgets.QDialog):
         try:
             _save_config(self.working_config)
             _reload_config_action()
+            self._saved_config = copy.deepcopy(self.working_config)
+            self._update_status()
             self.apply_button.show_success(
                 _tr("applied", self.working_config),
                 _tr("apply", self.working_config))
