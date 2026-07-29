@@ -20,8 +20,8 @@ import substance_painter.ui
 
 
 CONFIG_FILE = "radial_layer_tools_config.json"
-PLUGIN_VERSION = "1.0.2"
-PLUGIN_BUILD = "2026.07.23-v1.0.2-release"
+PLUGIN_VERSION = "1.0.3"
+PLUGIN_BUILD = "2026.07.29-v1.0.3-release"
 GITHUB_REPOSITORY = "Linbainuo/radial-layer-tools-releases"
 GITHUB_REPOSITORY_URL = "https://github.com/" + GITHUB_REPOSITORY
 GITHUB_LATEST_RELEASE_API = (
@@ -194,7 +194,10 @@ DEFAULT_CONFIG = {
         {
             "id": "fill_layer",
             "labels": {"en": "Fill Layer", "zh_CN": "填充图层"},
-            "descriptions": {"en": "Create at stack top", "zh_CN": "在顶部新建"},
+            "descriptions": {
+                "en": "Create above the selected layer",
+                "zh_CN": "在选中图层上方新建"
+            },
             "action": "add_fill_layer",
             "category": "layers",
             "icon": "style:views/icons/effects_fill.svg"
@@ -500,9 +503,15 @@ TRANSLATIONS = {
         "commands": "Menu Commands",
         "tab_commands": "Commands",
         "tab_combinations": "Menus",
+        "tab_custom": "Custom",
         "tab_shortcuts": "Shortcuts",
         "shortcut_empty": "Double-click a command on the left to add a shortcut",
         "remove_shortcut": "Remove shortcut",
+        "shortcut_available": "No conflict",
+        "shortcut_conflict": "Conflicts with: {names}",
+        "painter_shortcut": "Painter shortcut",
+        "wheel_shortcut_name": "Open radial menu",
+        "visibility_shortcut_name": "Toggle selected visibility",
         "default_menu": "Default Menu",
         "new_menu": "New menu",
         "new_menu_name": "Menu {number}",
@@ -613,9 +622,15 @@ TRANSLATIONS = {
         "commands": "菜单命令",
         "tab_commands": "命令",
         "tab_combinations": "菜单",
+        "tab_custom": "自定义",
         "tab_shortcuts": "快捷键",
         "shortcut_empty": "双击左侧命令添加快捷键",
         "remove_shortcut": "删除快捷键",
+        "shortcut_available": "未发现冲突",
+        "shortcut_conflict": "与以下快捷键冲突：{names}",
+        "painter_shortcut": "Painter 快捷键",
+        "wheel_shortcut_name": "打开图层轮盘",
+        "visibility_shortcut_name": "切换当前图层显示/隐藏",
         "default_menu": "默认菜单",
         "new_menu": "新建菜单",
         "new_menu_name": "菜单 {number}",
@@ -2325,6 +2340,217 @@ def _shortcut_value_from_sequence(sequence, fallback=None):
     return {"key": key, "modifiers": modifiers}
 
 
+def _shortcut_key(sequence):
+    try:
+        return QtGui.QKeySequence(sequence).toString(
+            QtGui.QKeySequence.PortableText).strip()
+    except Exception:
+        return ""
+
+
+def _clean_shortcut_owner_text(value):
+    text = re.sub(r"<[^>]+>", " ", str(value or ""))
+    text = text.split("\t", 1)[0].replace("&", "")
+    return " ".join(text.split()).strip(" -:|")
+
+
+def _painter_action_name(action, config=None):
+    for getter_name in (
+            "text", "iconText", "toolTip", "statusTip", "objectName"):
+        try:
+            value = getattr(action, getter_name)()
+        except Exception:
+            value = ""
+        label = _clean_shortcut_owner_text(value)
+        if label:
+            return label
+    return _tr("painter_shortcut", config)
+
+
+def _shortcut_owner_id(value):
+    return re.sub(r"[^a-z0-9]", "", str(value or "").casefold())
+
+
+def _painter_action_identifiers(action):
+    values = []
+    for getter_name in ("objectName", "data"):
+        try:
+            value = getattr(action, getter_name)()
+        except Exception:
+            value = ""
+        if value not in (None, ""):
+            values.append(str(value))
+    try:
+        property_names = action.dynamicPropertyNames()
+    except Exception:
+        property_names = []
+    for property_name in property_names:
+        try:
+            name = bytes(property_name).decode("utf-8")
+            value = action.property(name)
+        except Exception:
+            continue
+        if value not in (None, ""):
+            values.append(str(value))
+    return values
+
+
+def _humanize_shortcut_owner_id(value):
+    text = str(value or "").strip()
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text)
+    text = text.replace("_", " ")
+    return " ".join(text.split()).strip()
+
+
+def _setting_shortcut_sequences(value):
+    if isinstance(value, bool) or value is None:
+        return []
+    values = value if isinstance(value, (list, tuple)) else [value]
+    sequences = []
+    for item in values:
+        try:
+            if isinstance(item, int):
+                sequence = QtGui.QKeySequence(item)
+            elif isinstance(item, str):
+                sequence = QtGui.QKeySequence(item)
+            else:
+                continue
+        except Exception:
+            continue
+        if not sequence.isEmpty():
+            sequences.append(sequence)
+    return sequences
+
+
+def _append_painter_settings_shortcuts(index, action_names, config=None):
+    """Merge Painter's persisted live shortcut table from its own QSettings."""
+    settings = QtCore.QSettings()
+    settings.beginGroup("Shortcuts")
+    try:
+        keys = list(settings.childKeys())
+        for owner_id in keys:
+            if str(owner_id) == "SHORTCUT_SETTINGS_VERSION_ID":
+                continue
+            try:
+                value = settings.value(owner_id)
+            except (RuntimeError, TypeError):
+                # Painter also stores Alg::MouseShortcut values in this group.
+                # PySide cannot deserialize them, but keyboard shortcuts remain
+                # valid and should still be collected.
+                continue
+            sequences = _setting_shortcut_sequences(value)
+            if not sequences:
+                continue
+            owner_key = _shortcut_owner_id(owner_id)
+            label = action_names.get(owner_key)
+            if not label:
+                label = _humanize_shortcut_owner_id(owner_id)
+            if not label:
+                label = _tr("painter_shortcut", config)
+            for sequence in sequences:
+                _append_shortcut_owner(index, sequence, label)
+    finally:
+        settings.endGroup()
+
+
+def _append_shortcut_owner(index, sequence, label):
+    key = _shortcut_key(sequence)
+    label = _clean_shortcut_owner_text(label)
+    if not key or not label:
+        return
+    owners = index.setdefault(key, [])
+    if label not in owners:
+        owners.append(label)
+
+
+def _collect_painter_shortcut_index(config=None):
+    """Read Painter's live Qt shortcut assignments without touching preferences."""
+    index = {}
+    app = QtWidgets.QApplication.instance()
+    try:
+        main_window = substance_painter.ui.get_main_window()
+    except Exception:
+        main_window = None
+
+    roots = []
+    if main_window is not None:
+        roots.append(main_window)
+    if app is not None:
+        roots.append(app)
+        try:
+            roots.extend(app.topLevelWidgets())
+        except Exception:
+            pass
+
+    seen_actions = set()
+    seen_shortcuts = set()
+    action_names = {}
+    settings_action = globals().get("_SETTINGS_ACTION")
+    for root in roots:
+        if root is None:
+            continue
+        try:
+            actions = root.findChildren(QtGui.QAction)
+        except Exception:
+            actions = []
+        for action in actions:
+            identity = id(action)
+            if identity in seen_actions or action is settings_action:
+                continue
+            seen_actions.add(identity)
+            try:
+                if action.isSeparator():
+                    continue
+                sequences = list(action.shortcuts())
+            except Exception:
+                sequences = []
+            if not sequences:
+                try:
+                    sequences = [action.shortcut()]
+                except Exception:
+                    sequences = []
+            label = _painter_action_name(action, config)
+            for identifier in _painter_action_identifiers(action):
+                identifier_key = _shortcut_owner_id(identifier)
+                if identifier_key and identifier_key not in action_names:
+                    action_names[identifier_key] = label
+            for sequence in sequences:
+                _append_shortcut_owner(index, sequence, label)
+
+        try:
+            shortcuts = root.findChildren(QtGui.QShortcut)
+        except Exception:
+            shortcuts = []
+        for shortcut in shortcuts:
+            identity = id(shortcut)
+            if identity in seen_shortcuts:
+                continue
+            seen_shortcuts.add(identity)
+            sequences = []
+            try:
+                sequences = list(shortcut.keys())
+            except Exception:
+                try:
+                    sequences = [shortcut.key()]
+                except Exception:
+                    pass
+            label = ""
+            for getter_name in ("whatsThis", "objectName"):
+                try:
+                    label = _clean_shortcut_owner_text(
+                        getattr(shortcut, getter_name)())
+                except Exception:
+                    label = ""
+                if label:
+                    break
+            if not label:
+                label = _tr("painter_shortcut", config)
+            for sequence in sequences:
+                _append_shortcut_owner(index, sequence, label)
+    _append_painter_settings_shortcuts(index, action_names, config)
+    return index
+
+
 def _active_stack():
     try:
         return sp.textureset.get_active_stack()
@@ -2354,6 +2580,15 @@ def _layer_from_node(node):
 
 def _top_insert_position():
     return sp.layerstack.InsertPosition.from_textureset_stack(_active_stack())
+
+
+def _layer_insert_position():
+    selected = _selected_node()
+    if selected is None:
+        return _top_insert_position()
+    layer = _layer_from_node(selected)
+    target = layer if layer is not None else selected
+    return sp.layerstack.InsertPosition.above_node(target)
 
 
 def _effect_insert_position():
@@ -2436,7 +2671,7 @@ def _apply_selection_slot(node, selection_type):
 
 
 def _add_fill_layer(select_created=True):
-    node = sp.layerstack.insert_fill(_top_insert_position())
+    node = sp.layerstack.insert_fill(_layer_insert_position())
     if select_created:
         _select_node(node)
     return node
@@ -3504,6 +3739,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self._dirty = False
         self._highlight_color = QtGui.QColor("#2d8fe8")
         self._update_manager = None
+        self._painter_shortcut_index = {}
         self.shortcut_assignment_rows = {}
         self.working_config = copy.deepcopy(DEFAULT_CONFIG)
         self.setWindowTitle(_tr("settings_title"))
@@ -3609,6 +3845,24 @@ class SettingsDialog(QtWidgets.QDialog):
         menu_tab_layout.addWidget(self.combination_tab_indicator)
         mode_tab_layout.addWidget(menu_tab_container, 1)
 
+        custom_tab_container = QtWidgets.QWidget(self.mode_tab_bar)
+        custom_tab_layout = QtWidgets.QVBoxLayout(custom_tab_container)
+        custom_tab_layout.setContentsMargins(0, 0, 0, 0)
+        custom_tab_layout.setSpacing(0)
+        self.custom_tab_button = QtWidgets.QToolButton(custom_tab_container)
+        self.custom_tab_button.setObjectName("modeTab")
+        self.custom_tab_button.setCheckable(True)
+        self.custom_tab_button.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.custom_tab_button.clicked.connect(
+            lambda checked=False: self._set_command_mode(2))
+        custom_tab_layout.addWidget(self.custom_tab_button)
+        self.custom_tab_indicator = QtWidgets.QFrame(custom_tab_container)
+        self.custom_tab_indicator.setObjectName("modeTabIndicator")
+        self.custom_tab_indicator.setFixedHeight(2)
+        custom_tab_layout.addWidget(self.custom_tab_indicator)
+        mode_tab_layout.addWidget(custom_tab_container, 1)
+
         shortcut_tab_container = QtWidgets.QWidget(self.mode_tab_bar)
         shortcut_tab_layout = QtWidgets.QVBoxLayout(shortcut_tab_container)
         shortcut_tab_layout.setContentsMargins(0, 0, 0, 0)
@@ -3619,7 +3873,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.shortcut_tab_button.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.shortcut_tab_button.clicked.connect(
-            lambda checked=False: self._set_command_mode(2))
+            lambda checked=False: self._set_command_mode(3))
         shortcut_tab_layout.addWidget(self.shortcut_tab_button)
         self.shortcut_tab_indicator = QtWidgets.QFrame(shortcut_tab_container)
         self.shortcut_tab_indicator.setObjectName("modeTabIndicator")
@@ -3628,7 +3882,8 @@ class SettingsDialog(QtWidgets.QDialog):
         mode_tab_layout.addWidget(shortcut_tab_container, 1)
         self.mode_tab_group.addButton(self.command_tab_button, 0)
         self.mode_tab_group.addButton(self.combination_tab_button, 1)
-        self.mode_tab_group.addButton(self.shortcut_tab_button, 2)
+        self.mode_tab_group.addButton(self.custom_tab_button, 2)
+        self.mode_tab_group.addButton(self.shortcut_tab_button, 3)
         command_layout.addWidget(self.mode_tab_bar)
 
         self.command_content_stack = QtWidgets.QStackedWidget(self.command_page)
@@ -3669,6 +3924,11 @@ class SettingsDialog(QtWidgets.QDialog):
         self.menu_scroll.setWidget(self.menu_cards_host)
         combination_layout.addWidget(self.menu_scroll, 1)
         self.command_content_stack.addWidget(self.combination_page)
+
+        self.custom_command_page = QtWidgets.QWidget(
+            self.command_content_stack)
+        self.custom_command_page.setObjectName("customCommandPage")
+        self.command_content_stack.addWidget(self.custom_command_page)
 
         self.shortcut_command_list = QtWidgets.QListWidget(
             self.command_content_stack)
@@ -3737,15 +3997,19 @@ class SettingsDialog(QtWidgets.QDialog):
             self.form_labels[key] = label
             self.form.addRow(label, widget)
 
-        def add_resettable_row(key, widget, callback):
+        def add_resettable_row(key, widget, callback, status_label=None):
             container = QtWidgets.QWidget(self.properties_page)
             container.setObjectName("resettableField")
-            container.setFixedHeight(42)
-            layout = QtWidgets.QHBoxLayout(container)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(8)
-            layout.addWidget(widget, 1, QtCore.Qt.AlignVCenter)
-            reset_button = QtWidgets.QToolButton(container)
+            container.setFixedHeight(60 if status_label is not None else 42)
+            container_layout = QtWidgets.QVBoxLayout(container)
+            container_layout.setContentsMargins(0, 0, 0, 0)
+            container_layout.setSpacing(2)
+            field_row = QtWidgets.QWidget(container)
+            field_layout = QtWidgets.QHBoxLayout(field_row)
+            field_layout.setContentsMargins(0, 0, 0, 0)
+            field_layout.setSpacing(8)
+            field_layout.addWidget(widget, 1, QtCore.Qt.AlignVCenter)
+            reset_button = QtWidgets.QToolButton(field_row)
             reset_button.setObjectName("fieldResetButton")
             reset_button.setIcon(QtGui.QIcon(_icon_pixmap("reset")))
             reset_button.setIconSize(QtCore.QSize(16, 16))
@@ -3753,7 +4017,10 @@ class SettingsDialog(QtWidgets.QDialog):
             reset_button.setFocusPolicy(QtCore.Qt.NoFocus)
             reset_button.setAutoRaise(True)
             reset_button.clicked.connect(callback)
-            layout.addWidget(reset_button, 0, QtCore.Qt.AlignVCenter)
+            field_layout.addWidget(reset_button, 0, QtCore.Qt.AlignVCenter)
+            container_layout.addWidget(field_row)
+            if status_label is not None:
+                container_layout.addWidget(status_label)
             add_form_row(key, container)
             return reset_button
 
@@ -3765,8 +4032,12 @@ class SettingsDialog(QtWidgets.QDialog):
         add_form_row("language", self.language_combo)
         self.shortcut_edit = ShortcutCaptureEdit(self.properties_page)
         self.shortcut_edit.keySequenceChanged.connect(self._controls_changed)
+        self.shortcut_conflict_label = QtWidgets.QLabel(self.properties_page)
+        self.shortcut_conflict_label.setObjectName("shortcutConflictLabel")
+        self.shortcut_conflict_label.setFixedHeight(16)
         self.shortcut_reset_button = add_resettable_row(
-            "shortcut", self.shortcut_edit, self._reset_shortcut)
+            "shortcut", self.shortcut_edit, self._reset_shortcut,
+            self.shortcut_conflict_label)
         self.wheel_radius_spin = WheelValueEdit(self.properties_page)
         self.wheel_radius_spin.setRange(120, 210)
         self.wheel_radius_spin.setSuffix(" px")
@@ -3874,6 +4145,10 @@ class SettingsDialog(QtWidgets.QDialog):
         self.preview.segmentSelected.connect(self._select_item_by_id)
         self.preview.itemsChanged.connect(self._preview_items_changed)
         self.editor_content_stack.addWidget(self.preview)
+
+        self.custom_editor_page = QtWidgets.QWidget(self.editor_content_stack)
+        self.custom_editor_page.setObjectName("customEditorPage")
+        self.editor_content_stack.addWidget(self.custom_editor_page)
 
         self.shortcut_editor_page = QtWidgets.QWidget(self.editor_content_stack)
         self.shortcut_editor_page.setObjectName("shortcutEditorPage")
@@ -4010,7 +4285,8 @@ class SettingsDialog(QtWidgets.QDialog):
             QFrame#editorFooter { border-top: 1px solid #414141; }
             QStackedWidget#sidebarStack { background: #2b2b2b; }
             QStackedWidget#commandContentStack, QWidget#combinationPage,
-            QStackedWidget#editorContentStack, QWidget#shortcutEditorPage,
+            QWidget#customCommandPage, QStackedWidget#editorContentStack,
+            QWidget#customEditorPage, QWidget#shortcutEditorPage,
             QScrollArea#shortcutAssignmentScroll,
             QWidget#shortcutAssignmentHost {
                 background: #303030; border: none;
@@ -4026,6 +4302,13 @@ class SettingsDialog(QtWidgets.QDialog):
             QLabel#shortcutAssignmentIcon { background: transparent; border: none; }
             QLabel#shortcutAssignmentName {
                 color: #eeeeee; font-size: 12px; background: transparent;
+            }
+            QLabel#shortcutConflictLabel {
+                color: #8f9295; font-size: 10px; background: transparent;
+                border: none; padding: 0;
+            }
+            QLabel#shortcutConflictLabel[state="conflict"] {
+                color: #e06b6b; font-weight: 500;
             }
             QToolButton#shortcutDeleteButton {
                 min-width: 34px; max-width: 34px;
@@ -4188,6 +4471,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self._update_color_button()
         self._loading = False
         self._retranslate_ui()
+        self._refresh_shortcut_conflicts(refresh_painter=True)
         self.preview.set_config(self.working_config)
         if mark_saved:
             self._saved_config = copy.deepcopy(self.working_config)
@@ -4304,6 +4588,100 @@ class SettingsDialog(QtWidgets.QDialog):
     def _shortcut_delete_icon(self):
         return QtGui.QIcon(_icon_path("delete"))
 
+    def _refresh_painter_shortcut_index(self):
+        try:
+            self._painter_shortcut_index = _collect_painter_shortcut_index(
+                self.working_config)
+        except Exception:
+            self._painter_shortcut_index = {}
+            _error(
+                "Failed to read Painter shortcuts:\n" + traceback.format_exc())
+
+    def _shortcut_conflict_names(
+            self, sequence, owner_command_id=None, owner_is_wheel=False):
+        key = _shortcut_key(sequence)
+        if not key:
+            return []
+
+        names = list(self._painter_shortcut_index.get(key, []))
+
+        def append_unique(name):
+            name = str(name or "").strip()
+            if name and name not in names:
+                names.append(name)
+
+        if not owner_is_wheel and key == _shortcut_key(
+                self.shortcut_edit.keySequence()):
+            append_unique(_tr("wheel_shortcut_name", self.working_config))
+
+        for command_id, entry in self.shortcut_assignment_rows.items():
+            if str(command_id) == str(owner_command_id or ""):
+                continue
+            if key != _shortcut_key(entry["edit"].keySequence()):
+                continue
+            item = self._items_by_id().get(str(command_id))
+            if item is not None:
+                append_unique(_localized_value(
+                    item, "labels", self.working_config))
+
+        if key == _shortcut_key(QtGui.QKeySequence("H")):
+            append_unique(_tr(
+                "visibility_shortcut_name", self.working_config))
+        return names
+
+    def _set_shortcut_conflict_label(self, label, sequence, names):
+        key = _shortcut_key(sequence)
+        if not key:
+            label.clear()
+            label.setToolTip("")
+            label.hide()
+            state = "empty"
+        elif names:
+            separator = "、" if _language(self.working_config) == "zh_CN" else ", "
+            full_names = separator.join(names)
+            full_text = _tr(
+                "shortcut_conflict", self.working_config).format(
+                    names=full_names)
+            display_names = separator.join(names[:2])
+            if len(names) > 2:
+                display_names += " (+%d)" % (len(names) - 2)
+            label.setText(_tr(
+                "shortcut_conflict", self.working_config).format(
+                    names=display_names))
+            label.setToolTip(full_text)
+            label.show()
+            state = "conflict"
+        else:
+            label.clear()
+            label.setToolTip("")
+            label.hide()
+            state = "empty"
+        if label.property("state") != state:
+            label.setProperty("state", state)
+            style = label.style()
+            if style is not None:
+                style.unpolish(label)
+                style.polish(label)
+            label.update()
+
+    def _refresh_shortcut_conflicts(self, refresh_painter=False):
+        if refresh_painter:
+            self._refresh_painter_shortcut_index()
+        if hasattr(self, "shortcut_conflict_label"):
+            sequence = self.shortcut_edit.keySequence()
+            self._set_shortcut_conflict_label(
+                self.shortcut_conflict_label,
+                sequence,
+                self._shortcut_conflict_names(
+                    sequence, owner_is_wheel=True))
+        for command_id, entry in self.shortcut_assignment_rows.items():
+            sequence = entry["edit"].keySequence()
+            self._set_shortcut_conflict_label(
+                entry["conflict"],
+                sequence,
+                self._shortcut_conflict_names(
+                    sequence, owner_command_id=command_id))
+
     def _add_shortcut_assignment(self, command_id, shortcut=None, capture=False):
         command_id = str(command_id or "")
         existing = self.shortcut_assignment_rows.get(command_id)
@@ -4343,9 +4721,21 @@ class SettingsDialog(QtWidgets.QDialog):
             _localized_value(item, "labels", self.working_config), row)
         name_label.setObjectName("shortcutAssignmentName")
         name_label.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
+        name_label.setMinimumWidth(180)
+        name_label.setMaximumWidth(300)
         name_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-        row_layout.addWidget(name_label, 1, QtCore.Qt.AlignVCenter)
+        row_layout.addWidget(name_label, 0, QtCore.Qt.AlignVCenter)
+        row_layout.addStretch(1)
+
+        conflict_label = QtWidgets.QLabel(row)
+        conflict_label.setObjectName("shortcutConflictLabel")
+        conflict_label.setFixedHeight(16)
+        conflict_label.setMaximumWidth(420)
+        conflict_label.setAlignment(
+            QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        conflict_label.setTextInteractionFlags(QtCore.Qt.NoTextInteraction)
+        row_layout.addWidget(conflict_label, 0, QtCore.Qt.AlignVCenter)
 
         edit = ShortcutCaptureEdit(row)
         edit.setFixedSize(220, 36)
@@ -4373,10 +4763,13 @@ class SettingsDialog(QtWidgets.QDialog):
             "icon": icon_label,
             "name": name_label,
             "edit": edit,
+            "conflict": conflict_label,
             "delete": delete_button
         }
         self.shortcut_assignment_layout.addWidget(row)
         self._update_shortcut_assignment_visibility()
+        if not self._loading:
+            self._refresh_shortcut_conflicts()
         if capture:
             self.shortcut_assignment_scroll.ensureWidgetVisible(row)
             edit._begin_capture()
@@ -4398,11 +4791,13 @@ class SettingsDialog(QtWidgets.QDialog):
         widget.deleteLater()
         self._sync_command_shortcuts()
         self._update_shortcut_assignment_visibility()
+        self._refresh_shortcut_conflicts()
         self._update_status()
 
     def _command_shortcut_changed(self, command_id, sequence):
         del command_id, sequence
         self._sync_command_shortcuts()
+        self._refresh_shortcut_conflicts()
         self._update_status()
 
     def _sync_command_shortcuts(self):
@@ -4430,6 +4825,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 assignment.get("command_id", ""),
                 assignment.get("shortcut", {}))
         self._update_shortcut_assignment_visibility()
+        self._refresh_shortcut_conflicts()
 
     def _preview_items_changed(self, items):
         selected_id = self.preview.selected_id
@@ -4497,6 +4893,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
     def _show_properties_page(self):
         self.sidebar_stack.setCurrentWidget(self.properties_page)
+        self._refresh_shortcut_conflicts(refresh_painter=True)
 
     def _active_menu_preset(self):
         active_id = str(self.working_config.get("active_menu_id", "") or "")
@@ -4639,44 +5036,57 @@ class SettingsDialog(QtWidgets.QDialog):
 
     def _set_command_mode(self, index):
         index = int(index)
-        if index not in (0, 1, 2):
+        if index not in (0, 1, 2, 3):
             index = 0
         self.command_content_stack.setCurrentIndex(index)
         self.command_tab_button.setChecked(index == 0)
         self.combination_tab_button.setChecked(index == 1)
-        self.shortcut_tab_button.setChecked(index == 2)
+        self.custom_tab_button.setChecked(index == 2)
+        self.shortcut_tab_button.setChecked(index == 3)
         for widget, active in (
                 (self.command_tab_button, index == 0),
                 (self.command_tab_indicator, index == 0),
                 (self.combination_tab_button, index == 1),
                 (self.combination_tab_indicator, index == 1),
-                (self.shortcut_tab_button, index == 2),
-                (self.shortcut_tab_indicator, index == 2)):
+                (self.custom_tab_button, index == 2),
+                (self.custom_tab_indicator, index == 2),
+                (self.shortcut_tab_button, index == 3),
+                (self.shortcut_tab_indicator, index == 3)):
             widget.setProperty("active", bool(active))
             widget.style().unpolish(widget)
             widget.style().polish(widget)
             widget.update()
-        self.search_edit.setEnabled(index in (0, 2))
+        self.search_edit.setEnabled(index in (0, 3))
         if hasattr(self, "editor_content_stack"):
-            self.editor_content_stack.setCurrentIndex(1 if index == 2 else 0)
+            if index == 2:
+                editor_page = self.custom_editor_page
+            elif index == 3:
+                editor_page = self.shortcut_editor_page
+            else:
+                editor_page = self.preview
+            self.editor_content_stack.setCurrentWidget(editor_page)
         if hasattr(self, "hint_label"):
-            self.hint_label.setVisible(index != 2)
+            self.hint_label.setVisible(index in (0, 1))
         if hasattr(self, "status_label"):
             self._update_status()
-        if index in (0, 2):
+        if index == 3:
+            self._refresh_shortcut_conflicts(refresh_painter=True)
+        if index in (0, 3):
             self.search_edit.setFocus(QtCore.Qt.OtherFocusReason)
 
     def _show_commands_page(self):
         self.sidebar_stack.setCurrentWidget(self.command_page)
-        if self.command_content_stack.currentIndex() in (0, 2):
+        if self.command_content_stack.currentIndex() in (0, 3):
             self.search_edit.setFocus(QtCore.Qt.OtherFocusReason)
 
     def _update_status(self):
-        list_widget = self.command_list
-        if (hasattr(self, "command_content_stack")
-                and self.command_content_stack.currentIndex() == 2):
+        mode = (
+            self.command_content_stack.currentIndex()
+            if hasattr(self, "command_content_stack") else 0)
+        list_widget = self.command_list if mode == 0 else None
+        if mode == 3:
             list_widget = self.shortcut_command_list
-        current = list_widget.currentItem()
+        current = list_widget.currentItem() if list_widget is not None else None
         item_id = str(current.data(ROLE_ITEM_ID) or "") if current else ""
         item = self._items_by_id().get(item_id)
         name = (
@@ -4745,6 +5155,7 @@ class SettingsDialog(QtWidgets.QDialog):
     def _controls_changed(self, *args):
         del args
         self._sync_controls()
+        self._refresh_shortcut_conflicts()
         self.preview.set_config(self.working_config)
         self._update_status()
 
@@ -4762,6 +5173,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.search_edit.setPlaceholderText(_tr("search_commands", config))
         self.command_tab_button.setText(_tr("tab_commands", config))
         self.combination_tab_button.setText(_tr("tab_combinations", config))
+        self.custom_tab_button.setText(_tr("tab_custom", config))
         self.shortcut_tab_button.setText(_tr("tab_shortcuts", config))
         self.shortcut_empty_label.setText(_tr("shortcut_empty", config))
         self.new_menu_button.setText("+ " + _tr("new_menu", config))
@@ -4799,6 +5211,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
         self._rebuild_menu_cards()
         self._rebuild_shortcut_assignments()
+        self._refresh_shortcut_conflicts()
         self._update_status()
         self._refresh_update_ui()
 
@@ -5020,6 +5433,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self._show_commands_page()
         super().showEvent(event)
         self._bind_update_manager()
+        self._refresh_shortcut_conflicts(refresh_painter=True)
         if self._thumbnail_queue and not self._thumbnail_timer.isActive():
             self._thumbnail_timer.start(1)
 

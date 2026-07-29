@@ -4,6 +4,15 @@ All notable changes to Radial Layer Tools are documented here.
 
 ## Unreleased
 
+## 1.0.3 - 2026-07-29
+
+- Fixed Fill Layer creation so the new layer is inserted directly above the
+  selected layer instead of at the top of the texture set stack.
+- Added live Painter shortcut conflict detection to the shortcut editor.
+- Ignored Painter-specific mouse shortcut values that PySide cannot deserialize,
+  preventing repeated shortcut-scan errors in the log.
+- Added the Custom workspace tab as the foundation for reusable layer presets.
+
 ## 1.0.2 - 2026-07-23
 
 - Added Generator, Paint, Fill, Levels, Compare Mask, Filter, Color Selection,
